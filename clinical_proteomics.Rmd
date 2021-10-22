@@ -19,6 +19,7 @@ library(diann)
 #devtools::install_github("ftwkoopmans/msdap", upgrade = "never") # don't update dependencies if not needed
 library(msdap)
 library(readxl)
+library(tidyverse)
 
 ```
 
@@ -31,25 +32,49 @@ library(readxl)
 <!-- write.csv(IDs, "../human_Swissport_IDs_clinical_vaccine_COVID.csv") -->
 <!-- ``` -->
 
+```{r preprocess}
+
+report <- read.delim("../report.tsv") %>% 
+  mutate(Run = sapply(report$Run, function(x) strsplit(x, ".", fixed = T)[[1]][1]))
+meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
+  na.omit() %>% 
+  rename(Run = sample_id)
+
+#get report index
+meta_run =  data.frame(Run = meta$Run)
+report_run = data.frame(Run = report$Run)
+
+report_modified <- left_join(meta_run, report)
+
+#openxlsx::write.xlsx(report_modified, file = "../report_IVR.xlsx", overwrite = T)
+write.table(report_modified, file='../report_IVR.tsv', quote=FALSE, sep='\t', row.names = F)
+
+```
+
 
 ```{r}
 
-dataset = import_dataset_diann(filename = "../report.tsv")
+dataset = import_dataset_diann(filename = "../report_IVR.tsv")
 dataset = import_fasta(dataset, files = "../human_proteome_IVR_covvac.fasta")
 
 write_template_for_sample_metadata(dataset, "../sample_metadata.xlsx", overwrite = T)
 orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
-  na.omit()
+  mutate(sample_id = sapply(orig_meta$sample_id, function(x) paste0(x, ".rawIdx")))
+  #%>% na.omit()
 
-IVR_meta <- read_excel("../sample_metadata.xlsx") %>% 
+IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx") 
+IVR_meta <- IVR_meta %>%
   rename(sample_type = x3) %>% 
-  mutate(sample_id = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
-  inner_join(orig_meta, ., by = "sample_id") %>% 
-  select(!c(x1, x2, x4, group.y)) %>% 
-  rename(group = group.x)
-write.csv(IVR_meta, "../sample_metadata.xlsx", row.names = F)
+  mutate(Run = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
+  inner_join(., meta, by = "Run") %>% 
+  select(!c(x1, x2, x4, group.x)) %>% 
+  rename(group = group.y) %>% 
+  select(!Run)
+openxlsx::write.xlsx(IVR_meta, file = "../sample_metadata.xlsx", overwrite = T)
+#write.csv(IVR_meta, "../sample_metadata.xlsx", row.names = F)
 
-dataset = import_sample_metadata(dataset, filename = "../sample_metadata.xlsx")
+filename <- "/home/parnika/Documents/Projects/COV19_vaccine_proteomics/sample_metadata.xlsx"
+dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata.xlsx")
 
 
 ```
@@ -61,7 +86,7 @@ dataset = import_sample_metadata(dataset, filename = "../sample_metadata.xlsx")
 # - If you don't want to do stats, simply remove or comment this line (e.g. just look at QC report, or maybe your dataset has 1 experimental group only).
 # - example for multiple contrasts; dataset = setup_contrasts(dataset, contrast_list = list( c("control", "condition_a"),  c("control", "condition_b")  ) )
 # - example for adding random variables to eBayes/DEqMS/MSqRob regressions to i.e. counter batch effects (note; these variables must be column names present in sample metadata table. double-check with; print(dataset$samples,n=Inf)): dataset = setup_contrasts(dataset, contrast_list = list(  c("WT","KO")  ), random_variables = c("induction", "batch") )
-dataset = setup_contrasts(dataset, contrast_list = list(  c("AZD_BNT","BNT_BNT")  ) )
+dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT","BNT_BNT")))
 ```
 
 ```{r}
