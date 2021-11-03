@@ -1,0 +1,44 @@
+---
+title: "Vaccine clinical samples proteomics"
+output: html_notebook
+---
+### Proteomics using MS-DAP
+The samples were all prepared and analysed within the same batch and then analysed with DIA-NN.
+
+```{r}
+# if (!requireNamespace("BiocManager", quietly=TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("DEP")
+
+library(DEP)
+library(dplyr)
+```
+
+```{r}
+data <- read.delim("../report.pg_matrix.tsv", header = T)
+data_measurements <- data[,c(6:236)]
+short_names <- sapply(colnames(data_measurements), function(x) strsplit(x, split = "Data.50.0075.")[[1]][2])
+short_names <- sapply(short_names, function(x) strsplit(x, split = ".rawIdx.wiff.dia")[[1]][1])
+short_names <- sapply(short_names, function(x) strsplit(x, split = "_50.0075_")[[1]][2])
+colnames(data_measurements) <- short_names
+
+meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
+  na.omit() %>% 
+  mutate(condition = paste(vacc_group, visit, sep = "_")) %>% 
+  rename(label = sample_id) %>% 
+  group_by(condition) %>% 
+  mutate(replicate = row_number())
+
+meta$label <- sapply(meta$label, function(x) strsplit(x, split = "_50-0075_")[[1]][2])
+
+data_measurements <- data_measurements[meta$label]
+
+# exp design
+# IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx")
+SE_meta <- meta
+SE_data <- make_unique(cbind(data[,1:5], data_measurements), "Genes", "Protein.Ids", delim = ";")
+SE_data_columns <- 6:131
+
+data_se <- make_se(SE_data, SE_data_columns, SE_meta)
+
+```
