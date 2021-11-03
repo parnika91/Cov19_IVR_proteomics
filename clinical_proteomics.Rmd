@@ -24,13 +24,13 @@ library(tidyverse)
 ```
 
 
-<!-- ```{r get_swissprot_fasta} -->
-<!-- proteinIds <- read.delim("~/Downloads/muelledm@20210812+1504_50-0075/report.tsv") %>% -->
-<!--   select(Protein.Ids) %>% -->
-<!--   distinct() -->
-<!-- IDs = sapply(., function(x) unlist(strsplit(x, ";"))) -->
-<!-- write.csv(IDs, "../human_Swissport_IDs_clinical_vaccine_COVID.csv") -->
-<!-- ``` -->
+```{r get_swissprot_fasta}
+# proteinIds <- read.delim("~/Downloads/muelledm@20210812+1504_50-0075/report.tsv") %>%
+#   select(Protein.Ids) %>%
+#   distinct()
+# IDs = sapply(., function(x) unlist(strsplit(x, ";")))
+# write.csv(IDs, "../human_Swissport_IDs_clinical_vaccine_COVID.csv")
+```
 
 ```{r preprocess}
 
@@ -38,7 +38,8 @@ report <- read.delim("../report.tsv") %>%
   mutate(Run = sapply(report$Run, function(x) strsplit(x, ".", fixed = T)[[1]][1]))
 meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
   na.omit() %>% 
-  rename(Run = sample_id)
+  rename(Run = sample_id) %>% 
+  mutate(group = paste(vacc_group, visit, sep = "_")) #paste(vacc_group, visit, sep = "_")
 
 #get report index
 meta_run =  data.frame(Run = meta$Run)
@@ -54,17 +55,15 @@ write.table(report_modified, file='../report_IVR.tsv', quote=FALSE, sep='\t', ro
 
 ```{r}
 
-dataset = import_dataset_diann(filename = "../report_IVR.tsv")
-dataset = import_fasta(dataset, files = "../human_proteome_IVR_covvac.fasta")
-
 write_template_for_sample_metadata(dataset, "../sample_metadata.xlsx", overwrite = T)
-orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
+orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") 
+orig_meta <- orig_meta %>% 
   mutate(sample_id = sapply(orig_meta$sample_id, function(x) paste0(x, ".rawIdx")))
   #%>% na.omit()
 
 IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx") 
 IVR_meta <- IVR_meta %>%
-  rename(sample_type = x3) %>% 
+  rename(plate_row = x3) %>% 
   mutate(Run = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
   inner_join(., meta, by = "Run") %>% 
   select(!c(x1, x2, x4, group.x)) %>% 
@@ -73,10 +72,12 @@ IVR_meta <- IVR_meta %>%
 openxlsx::write.xlsx(IVR_meta, file = "../sample_metadata.xlsx", overwrite = T)
 #write.csv(IVR_meta, "../sample_metadata.xlsx", row.names = F)
 
-filename <- "/home/parnika/Documents/Projects/COV19_vaccine_proteomics/sample_metadata.xlsx"
+#filename <- "/home/parnika/Documents/Projects/COV19_vaccine_proteomics/sample_metadata.xlsx"
+
+dataset = import_dataset_diann(filename = "../report_IVR.tsv")
+dataset = import_fasta(dataset, files = "../20200406_Human-isoform-uniprot-proteome-3AUP000005640.fasta")
+#dataset = import_fasta(dataset, files = "../human_proteome_IVR_covvac.fasta")
 dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata.xlsx")
-
-
 ```
 
 ```{r}
@@ -86,7 +87,7 @@ dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata.
 # - If you don't want to do stats, simply remove or comment this line (e.g. just look at QC report, or maybe your dataset has 1 experimental group only).
 # - example for multiple contrasts; dataset = setup_contrasts(dataset, contrast_list = list( c("control", "condition_a"),  c("control", "condition_b")  ) )
 # - example for adding random variables to eBayes/DEqMS/MSqRob regressions to i.e. counter batch effects (note; these variables must be column names present in sample metadata table. double-check with; print(dataset$samples,n=Inf)): dataset = setup_contrasts(dataset, contrast_list = list(  c("WT","KO")  ), random_variables = c("induction", "batch") )
-dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT","BNT_BNT")))
+dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT_visit_0", "AZD_BNT_visit_4"), c("AZD_BNT_visit_0", "AZD_BNT_visit_8"), c("BNT_BNT_visit_0", "BNT_BNT_visit_4"), c("BNT_BNT_visit_0", "BNT_BNT_visit_8")))
 ```
 
 ```{r}
@@ -100,9 +101,9 @@ dataset = analysis_quickstart(
   filter_min_quant = 3,          # similarly, the number of reps where the peptide must have a quantitative value
   filter_fraction_detect = 0.75, # each peptide must have a good confidence score in at least 75% of samples per group
   filter_fraction_quant = 0.75,  # analogous for quantitative values
-  filter_by_contrast = TRUE,     # only relevant if dataset has 3+ groups. For DEA at each contrast, filters and normalization are applied on the subset of relevant samples within the contrast for efficiency, see further MS-DAP manuscript. Set to FALSE to disable and use traditional "global filtering" (filters are applied to all sample groups, same data table used in all statistics)
-  norm_algorithm = c("vsn", "modebetween_protein"), # normalization; first vsn, then modebetween on protein-level (applied sequentially so the MS-DAP modebetween algorithm corrects scaling/balance between-sample-groups)
-  dea_algorithm = c("ebayes","deqms"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
+  filter_by_contrast = T,     # only relevant if dataset has 3+ groups. For DEA at each contrast, filters and normalization are applied on the subset of relevant samples within the contrast for efficiency, see further MS-DAP manuscript. Set to FALSE to disable and use traditional "global filtering" (filters are applied to all sample groups, same data table used in all statistics)
+  norm_algorithm = c("vsn", "modebetween"), # normalization; first vsn, then modebetween on protein-level (applied sequentially so the MS-DAP modebetween algorithm corrects scaling/balance between-sample-groups)
+  dea_algorithm = c("ebayes", "deqms"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
   dea_qvalue_threshold = 0.01,                      # threshold for significance of adjusted p-values in figures and output tables
   dea_log2foldchange_threshold = NA,                # threshold for significance of log2 foldchanges. 0 = disable, NA = automatically infer through bootstrapping
   output_qc_report = TRUE,                          # optionally, set to FALSE to skip the creation of the QC report (not recommended for first-time use)
@@ -114,4 +115,27 @@ dataset = analysis_quickstart(
 print_dataset_summary(dataset)
 
 # 7) All done! Check out the generated files in the output directory, starting with report.pdf
+```
+
+```{r}
+
+# feature selection: only peptides detected in 3+ replicates in each sample group, then apply normalization (vwmb algorithm)
+dataset = filter_dataset(dataset,
+                         filter_min_detect = 1,
+                         norm_algorithm = c("vsn", "modebetween_protein"),
+                         by_group = T, all_group = T, by_contrast = F)
+#> progress: caching filter data took 1 seconds
+#> progress: peptide filtering and normalization took 2 seconds
+
+# apply limma's eBayes to each contrast and flag proteins as significant at 5% FDR and foldchange larger than a threshold estimated from bootstrap analyses (specified by parameter; fc_signif=NA)
+dataset = dea(dataset, algo_de = "deqms", qval_signif = 0.05, fc_signif = NA)
+#> info: peptide to protein rollup strategy: maxlfq
+#> info: differential abundance analysis for contrast: A vs B
+#> info: using data from peptide filter: global data filter
+#> progress: peptide to protein rollup with MaxLFQ took 20 seconds
+#> info: log2 foldchange threshold estimated by bootstrap analysis: 0.712
+#> progress: eBayes took 1 seconds
+
+# add the yeast/human protein classifications to DEA score tibble and filter to only keep human and yeast proteins
+tib_plot = left_join(dataset$de_proteins, dataset$proteins, by="protein_id")
 ```
