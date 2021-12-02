@@ -34,8 +34,10 @@ library(tidyverse)
 
 ```{r preprocess}
 
-report <- read.delim("../report.tsv") %>% 
-  mutate(Run = sapply(report$Run, function(x) strsplit(x, ".", fixed = T)[[1]][1]))
+report <- read.delim("../report.tsv") 
+report <- report %>% 
+  mutate(Run = sapply(report$Run, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
+  mutate(Precursor.Quantity = log2(Precursor.Quantity+0.00001))
 meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
   na.omit() %>% 
   rename(Run = sample_id) %>% 
@@ -87,7 +89,7 @@ dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata.
 # - If you don't want to do stats, simply remove or comment this line (e.g. just look at QC report, or maybe your dataset has 1 experimental group only).
 # - example for multiple contrasts; dataset = setup_contrasts(dataset, contrast_list = list( c("control", "condition_a"),  c("control", "condition_b")  ) )
 # - example for adding random variables to eBayes/DEqMS/MSqRob regressions to i.e. counter batch effects (note; these variables must be column names present in sample metadata table. double-check with; print(dataset$samples,n=Inf)): dataset = setup_contrasts(dataset, contrast_list = list(  c("WT","KO")  ), random_variables = c("induction", "batch") )
-dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT_visit_0", "AZD_BNT_visit_4"), c("AZD_BNT_visit_0", "AZD_BNT_visit_8"), c("BNT_BNT_visit_0", "BNT_BNT_visit_4"), c("BNT_BNT_visit_0", "BNT_BNT_visit_8")))
+dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),c("AZD_BNT_visit_0", "AZD_BNT_visit_1"), c("AZD_BNT_visit_0", "AZD_BNT_visit_4"), c("AZD_BNT_visit_0", "AZD_BNT_visit_8"), c("BNT_BNT_visit_0", "BNT_BNT_visit_4"), c("BNT_BNT_visit_0", "BNT_BNT_visit_8"), c("AZD_BNT_visit_5", "AZD_BNT_visit_6"), c("BNT_BNT_visit_5", "BNT_BNT_visit_6")))
 ```
 
 ```{r}
@@ -99,17 +101,20 @@ dataset = analysis_quickstart(
   dataset,
   filter_min_detect = 3,         # each peptide must have a good confidence score in at least N samples per group
   filter_min_quant = 3,          # similarly, the number of reps where the peptide must have a quantitative value
-  filter_fraction_detect = 0.75, # each peptide must have a good confidence score in at least 75% of samples per group
-  filter_fraction_quant = 0.75,  # analogous for quantitative values
+  filter_fraction_detect = 0.5, # each peptide must have a good confidence score in at least 75% of samples per group
+  filter_fraction_quant = 0.5,  # analogous for quantitative values
   filter_by_contrast = T,     # only relevant if dataset has 3+ groups. For DEA at each contrast, filters and normalization are applied on the subset of relevant samples within the contrast for efficiency, see further MS-DAP manuscript. Set to FALSE to disable and use traditional "global filtering" (filters are applied to all sample groups, same data table used in all statistics)
   norm_algorithm = c("vsn", "modebetween"), # normalization; first vsn, then modebetween on protein-level (applied sequentially so the MS-DAP modebetween algorithm corrects scaling/balance between-sample-groups)
-  dea_algorithm = c("ebayes", "deqms"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
-  dea_qvalue_threshold = 0.01,                      # threshold for significance of adjusted p-values in figures and output tables
+  dea_algorithm = c("ebayes", "deqms", "msempire"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
+  dea_qvalue_threshold = 0.05,                      # threshold for significance of adjusted p-values in figures and output tables
   dea_log2foldchange_threshold = NA,                # threshold for significance of log2 foldchanges. 0 = disable, NA = automatically infer through bootstrapping
+  diffdetect_min_samples_observed = 1,
+  pca_sample_labels = "auto",
   output_qc_report = TRUE,                          # optionally, set to FALSE to skip the creation of the QC report (not recommended for first-time use)
   output_abundance_tables = TRUE,                   # optionally, disable the creation of abundance table output files
   output_dir = "msdap_results",                    # output directory, here set to "msdap_results" within your working directory. Alternatively provide a full path, eg; output_dir="C:/path/to/myproject",
-  output_within_timestamped_subdirectory = TRUE
+  output_within_timestamped_subdirectory = TRUE,
+  dump_all_data = T
   )
 # print a short summary of results at the end
 print_dataset_summary(dataset)
