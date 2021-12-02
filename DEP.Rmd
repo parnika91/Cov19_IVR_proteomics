@@ -12,11 +12,13 @@ The samples were all prepared and analysed within the same batch and then analys
 
 library(DEP)
 library(dplyr)
+library(openxlsx)
+library(readxl)
 ```
 
 ```{r}
 data <- read.delim("../report.pg_matrix.tsv", header = T)
-data_measurements <- data[,c(6:236)]
+data_measurements <- log2(data[,c(6:236)])
 short_names <- sapply(colnames(data_measurements), function(x) strsplit(x, split = "Data.50.0075.")[[1]][2])
 short_names <- sapply(short_names, function(x) strsplit(x, split = ".rawIdx.wiff.dia")[[1]][1])
 short_names <- sapply(short_names, function(x) strsplit(x, split = "_50.0075_")[[1]][2])
@@ -41,4 +43,124 @@ SE_data_columns <- 6:131
 
 data_se <- make_se(SE_data, SE_data_columns, SE_meta)
 
+```
+
+```{r}
+# Plot a barplot of the protein identification overlap between samples
+plot_frequency(data_se)
+
+# Filter for proteins that are identified in all replicates of at least one condition
+data_filt <- filter_missval(data_se, thr = 0)
+
+# Less stringent filtering:
+# Filter for proteins that are identified in 2 out of 3 replicates of at least one condition
+data_filt2 <- filter_missval(data_se, thr = 1)
+# Plot a barplot of the number of identified proteins per samples
+plot_numbers(data_filt)
+
+# Plot a barplot of the protein identification overlap between samples
+plot_coverage(data_filt)
+
+```
+
+```{r}
+# Normalize the data
+data_norm <- normalize_vsn(data_filt)
+
+# Visualize normalization by boxplots for all samples before and after normalization
+plot_normalization(data_filt, data_norm)
+
+# Plot a heatmap of proteins with missing values
+plot_missval(data_filt)
+# Plot intensity distributions and cumulative fraction of proteins with and without missing values
+plot_detect(data_filt)
+
+
+
+
+## Error in match.arg(fun): 'arg' should be one of "bpca", "knn", "QRILC", "MLE", "MinDet", "MinProb", "man", "min", "zero", "mixed", "nbavg"
+
+# Impute missing data using random draws from a Gaussian distribution centered around a minimal value (for MNAR)
+data_imp <- impute(data_norm, fun = "MinProb", q = 0.01)
+
+# Impute missing data using random draws from a manually defined left-shifted Gaussian distribution (for MNAR)
+data_imp_man <- impute(data_norm, fun = "man", shift = 1.8, scale = 0.3)
+
+# Impute missing data using the k-nearest neighbour approach (for MAR)
+data_imp_knn <- impute(data_norm, fun = "knn", rowmax = 0.9)
+
+#The effect of the imputation on the distributions can be visualized.
+
+# Plot intensity distributions before and after imputation
+plot_imputation(data_norm, data_imp)
+
+plot_imputation(data_norm, data_imp_man) #best for our data
+
+plot_imputation(data_norm, data_imp_knn)
+```
+
+```{r}
+
+# Differential enrichment analysis  based on linear models and empherical Bayes statistics
+
+# Test all possible comparisons of samples
+#data_diff_all_contrasts <- test_diff(data_imp, type = "all")
+
+## Tested contrasts: Ubi4_vs_Ubi6, Ubi4_vs_Ctrl, Ubi4_vs_Ubi1, Ubi6_vs_Ctrl, Ubi6_vs_Ubi1, Ctrl_vs_Ubi1
+
+# Test manually defined comparisons
+data_diff_manual <- test_diff(data_imp_man, type = "manual", 
+                              test = c("AZD_BNT_visit_0_vs_AZD_BNT_visit_4", "AZD_BNT_visit_0_vs_AZD_BNT_visit_8",
+                                       "BNT_BNT_visit_0_vs_BNT_BNT_visit_4", "BNT_BNT_visit_0_vs_BNT_BNT_visit_8",
+                                       "AZD_BNT_visit_0_vs_AZD_BNT_visit_1", "BNT_BNT_visit_0_vs_BNT_BNT_visit_1",
+                                       "AZD_BNT_visit_5_vs_AZD_BNT_visit_6", "BNT_BNT_visit_5_vs_BNT_BNT_visit_6"))
+
+## Tested contrasts: Ubi4_vs_Ctrl, Ubi6_vs_Ctrl
+
+#Finally, significant proteins are defined by user-defined cutoffs using add_rejections.
+
+# Denote significant proteins based on user defined cutoffs
+dep <- add_rejections(data_diff_manual, alpha = 0.05, lfc = log2(1))
+
+```
+
+```{r}
+# Plot the first and second principal components
+plot_pca(dep, x = 1, y = 2, n = 20, point_size = 4, indicate = c("visit"))
+
+# Plot the Pearson correlation matrix
+plot_cor(dep, significant = TRUE, lower = 0, upper = 1, pal = "Reds", indicate = c("vacc_group","visit"), font_size = 7)
+
+# Plot a heatmap of all significant proteins with the data centered per protein
+plot_heatmap(dep, type = "centered", kmeans = TRUE, 
+             k = 6, col_limit = 4, show_row_names = FALSE,
+             indicate = c("vacc_group", "visit"))
+
+# Plot a heatmap of all significant proteins (rows) and the tested contrasts (columns)
+plot_heatmap(dep, type = "contrast", kmeans = TRUE, 
+             k = 6, col_limit = 10, show_row_names = FALSE)
+
+# Plot a volcano plot for the contrast "Ubi6 vs Ctrl""
+plot_volcano(dep, contrast = "AZD_BNT_visit_0_vs_AZD_BNT_visit_1", label_size = 2, add_names = TRUE)
+plot_volcano(dep, contrast = "BNT_BNT_visit_0_vs_BNT_BNT_visit_1", label_size = 2, add_names = TRUE)
+plot_volcano(dep, contrast = "AZD_BNT_visit_5_vs_AZD_BNT_visit_6", label_size = 2, add_names = TRUE)
+plot_volcano(dep, contrast = "BNT_BNT_visit_5_vs_BNT_BNT_visit_6", label_size = 2, add_names = TRUE)
+```
+
+```{r}
+# Generate a results table
+data_results <- get_results(dep)
+
+# Number of significant proteins
+data_results %>% filter(significant) %>% nrow()
+
+# Generate a wide data.frame
+df_wide <- get_df_wide(dep)
+# Generate a long data.frame
+df_long <- get_df_long(dep)
+
+# Save analyzed data
+save(data_se, data_norm, data_imp_man, data_diff_manual, dep, file = "IVRproteomics_DEP.RData")
+# These data can be loaded in future R sessions using this command
+#load("data.RData")
 ```
