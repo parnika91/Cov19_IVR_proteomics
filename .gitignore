@@ -4,3 +4,5 @@
 *.html
 
 msdap_results/
+
+*.RData
