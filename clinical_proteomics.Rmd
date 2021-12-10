@@ -170,7 +170,7 @@ my_dea_stats = function(peptides, samples, eset_peptides, eset_proteins, input_i
                   # the name of your algorithm. must be a non-empty character string uniquely indicating the name/label of your method (eg; do NOT use names already used by other methods in this pipeline, like 'ebayes')
                   algo_de = "my_dea_stats")
 
-  cat("Example custom DEA implementation, my_dea_stats(), yielded", sum(is.finite(result$qvalue) & result$qvalue<=0.01), "hits at qvalue<=0.01\n")
+  cat("Example custom DEA implementation, my_dea_stats(), yielded", sum(is.finite(result$qvalue) & result$qvalue<=0.5), "hits at qvalue<=0.01\n")
   return(result)
 }
 
@@ -198,18 +198,19 @@ gplots::venn(list(ebayes=dataset$de_proteins %>% filter(algo_de=="ebayes" & qval
 ```
 
 ```{r manual}
-as_matrix_except_first_column = function(x) {
-  if (is_tibble(x)) {
+#### functions
+as_matrix_except_first_column = function(x)
+{
+  if (is_tibble(x)) 
+  {
     x = as.data.frame(x, stringsAsFactors = F)
   }
   rownames(x) = x[, 1]
   as.matrix(x[, -1, drop = F])
 }
-###
-column_contrasts = dataset_contrasts(dataset)
-col_contr = column_contrasts[1]
 
-get_column_intensity = function(peptides, contr_lbl = NA) {
+get_column_intensity = function(peptides, contr_lbl = NA)
+{
   ref = c("filter by contrast" = paste0("intensity_", contr_lbl),
           "global data filter" = "intensity_all_group",
           "custom filtering and normalization" = "intensity_norm",
@@ -217,9 +218,95 @@ get_column_intensity = function(peptides, contr_lbl = NA) {
   return(ref[ref %in% colnames(peptides)][1])
 }
 
+# dea_protein_background_foldchange_limits
+    #' @importFrom arrangements combinations
+dea_protein_background_foldchange_limits = function(eset, probs = 0.95, max_permutations = 100) {
+  pd = Biobase::pData(eset)
+  x = Biobase::exprs(eset)
+
+  samples_cond1 = pd$sample_id[pd$condition == 1] # letters[1:3]
+  samples_cond2 = pd$sample_id[pd$condition == 2] # LETTERS[1:4]
+
+  set.seed(1234)
+
+
+  ## number of samples to swap around
+  # if both groups are equal size, we can get by with floor(m/2) which is slightly more efficient. eg; 2 groups of 3 samples -->> swapping 1 sample from group A to B is the same as swapping 2 samples
+  m = min(length(samples_cond1), length(samples_cond2))
+  if(length(samples_cond1) == length(samples_cond2)) {
+    n_swap = floor(m / 2)
+  } else {
+    n_swap = ceiling(m / 2)
+  }
+# use the arrangements package for efficiently calculating a *random subset* of all permutations
+  # rationale: generating all combinations is not feasible for some datasets (eg; group of 50+ samples)
+  # rationale: taking first N combinations would bias the subset of selected samples towards the first few (as the output of combination is in lexicographical order)
+  ncomb_1 = arrangements::ncombinations(x = length(samples_cond1), k = n_swap, bigz = T)
+  ncomb_2 = arrangements::ncombinations(x = length(samples_cond2), k = n_swap, bigz = T)
+
+  # if 'raw' type, there were so many combinations that the number returned by ncombinations is a big-int
+  if(typeof(ncomb_1) == "raw") {
+    ncomb_1 = max_permutations
+  } else {
+    ncomb_1 = min(max_permutations, ncomb_1)
+  }
+  if(typeof(ncomb_2) == "raw") {
+    ncomb_2 = max_permutations
+  } else {
+    ncomb_2 = min(max_permutations, ncomb_2)
+  }
+
+  # select a random number of k-sample subsets
+  samples_swap_cond1 = arrangements::combinations(x = seq_along(samples_cond1), k = n_swap, nsample = ncomb_1, layout = "list")
+  samples_swap_cond2 = arrangements::combinations(x = seq_along(samples_cond2), k = n_swap, nsample = ncomb_2, layout = "list")
+
+
+  ## comb = combination of indices in samples_swap_cond*
+  # if there are many unique combinations in each condition, we do not have to recycle any subsets thereby maximizing the coverage of samples used in permutation analysis
+  if(length(samples_swap_cond1) >= max_permutations && length(samples_swap_cond2) >= max_permutations) {
+    comb = data.frame(i1 = 1:max_permutations, i2 = 1:max_permutations)
+  } else {
+    # to reach the desired number of permutations, combine subsets between conditions (prevent combinatorial explosion at expand.grid() )
+    comb = expand.grid(i1 = 1:min(length(samples_swap_cond1), floor(max_permutations / m)), i2 = 1:min(length(samples_swap_cond2), floor(max_permutations / m)))
+
+    # check if expand.grid() yielded too many combinations
+    if(nrow(comb) > max_permutations) {
+      comb = comb[sample(1:nrow(comb), max_permutations), ]
+    }
+  }
+
+
+  ## compute foldchange distributions from permuted sample labels
+  # allocate memory for all foldchanges
+  fc_matrix = matrix(0.0, nrow=nrow(x), ncol=nrow(comb))
+  # iterate label swaps
+  for(i in 1:nrow(comb)) { #i=1
+    # 'permuted' sample identities for each condition + remaining samples
+    j = comb[i,]
+    sample_id_cond1 = c(samples_cond2[samples_swap_cond2[[j$i2]]], setdiff(samples_cond1, samples_cond1[samples_swap_cond1[[j$i1]]]))
+    sample_id_cond2 = c(samples_cond1[samples_swap_cond1[[j$i1]]], setdiff(samples_cond2, samples_cond2[samples_swap_cond2[[j$i2]]]))
+    # print(i); print(sample_id_cond1); print(sample_id_cond2)
+
+    # foldchange by simply taking mean value in each group
+    x1 = matrixStats::rowMeans2(x[,colnames(x) %in% sample_id_cond1, drop=F], na.rm = T)
+    x2 = matrixStats::rowMeans2(x[,colnames(x) %in% sample_id_cond2, drop=F], na.rm = T)
+    fc_matrix[,i] = x1 - x2
+  }
+
+  # we should not infer a-symmetric foldchange thresholds from the permutation data, so take the largest absolute value
+  return(max(abs(quantile(fc_matrix, probs = c(1-probs, probs), na.rm = T))))
+}
+
+### random vars
+dataset$dea_random_variables = random_variables = colnames(dataset$samples)
+
+
+### contrasts
+column_contrasts = dataset_contrasts(dataset)
+col_contr = column_contrasts[1]
 col_contr_intensity = get_column_intensity(dataset$peptides, col_contr)
 
-###
+### samples and peptides for contrast
 samples_for_contrast = dataset$samples %>%
       select(sample_id, shortname, group, condition = !!col_contr, everything()) %>%
       filter(condition != 0) %>%
@@ -239,80 +326,144 @@ peptide_intensities = as_matrix_except_first_column(peptides %>%
                                                         select(peptide_id, sample_id, intensity) %>%
                                                         spread(sample_id, intensity))
 
-  # order the columns/samples as specified in `samples`
-  j = order(match(colnames(peptide_intensities), samples$sample_id))  # example; order(match(c("a", "c", "x", "b"), letters[1:3]))
-  peptide_intensities = peptide_intensities[,j,drop=F]
+# order the columns/samples as specified in `samples`
+j = order(match(colnames(peptide_intensities), samples$sample_id))  # example; order(match(c("a", "c", "x", "b"), letters[1:3]))
+peptide_intensities = peptide_intensities[,j,drop=F]
 
-  # create ExpressionSet with empty feature/protocol data
-  eset = Biobase::ExpressionSet(
-    assayData = peptide_intensities,
-    featureData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = T),
-    protocolData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = F)
-  )
+# create ExpressionSet with empty feature/protocol data
+eset = Biobase::ExpressionSet(
+  assayData = peptide_intensities,
+  featureData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = T),
+  protocolData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = F)
+)
 sid = rownames(Biobase::pData(eset))
-  Biobase::pData(eset) = data.frame(samples %>% slice(match(sid, sample_id)), row.names = sid)
+Biobase::pData(eset) = data.frame(samples %>% slice(match(sid, sample_id)), row.names = sid)
 
-  ### peptides -->> protein metadata
-  pid = rownames(Biobase::fData(eset))
-  pep = peptides %>%
-    select(peptide_id, sequence_plain, sequence_modified, protein_id) %>%
-    slice(match(pid, peptide_id)) %>%
-    left_join(proteins, by = "protein_id")
+### peptides -->> protein metadata
+pid = rownames(Biobase::fData(eset))
+pep = peptides %>%
+  select(peptide_id, sequence_plain, sequence_modified, protein_id) %>%
+  slice(match(pid, peptide_id)) %>%
+  left_join(proteins, by = "protein_id")
 
-  Biobase::fData(eset) = data.frame(pep, row.names = pid)
-  eset_peptides <- eset
-  # rollup peptide abundance matrix to protein-level
-    m = rollup_pep2prot(peptides_for_contrast, intensity_is_log2 = T, algo_rollup = "maxlfq_diann", return_as_matrix = T)
-  m = m[,match(colnames(Biobase::exprs(eset_peptides)), colnames(m)),drop=F]
+Biobase::fData(eset) = data.frame(pep, row.names = pid)
+eset_peptides <- eset
+
+# rollup peptide abundance matrix to protein-level
+m = rollup_pep2prot(peptides_for_contrast, 
+                    intensity_is_log2 = T,
+                    algo_rollup = "maxlfq_diann", 
+                    return_as_matrix = T)
+m = m[,match(colnames(Biobase::exprs(eset_peptides)), colnames(m)),drop=F]
   
-  #eset_proteins = protein_eset_from_data(m, eset = eset_peptides)
-  x = m
-  eset = eset_peptides
-  fdata = Biobase::fData(eset)
-  pdata = Biobase::pData(eset)
-  if(!("protein_id" %in% colnames(fdata))) {
-    append_log("expressionset fData() must contain column 'protein_id'", type = "error")
-  }
-  if(!all(rownames(x) %in% fdata$protein_id)) {
-    append_log("expressionset fData() column 'protein_id' must contain an entry for each 'rowname' of matrix x", type = "error")
-  }
-  if(ncol(x) != nrow(pdata) || !all(colnames(x) == pdata$sample_id)) {
-    append_log("expressionset pData() must align with matrix x; each row in pdata must describe a column in x AND the pdata column 'sample_id' must match column names of x", type = "error")
-  }
+#eset_proteins = protein_eset_from_data(m, eset = eset_peptides)
+x = m
+eset = eset_peptides
+fdata = Biobase::fData(eset)
+pdata = Biobase::pData(eset)
+if(!("protein_id" %in% colnames(fdata)))
+{
+  append_log("expressionset fData() must contain column 'protein_id'", type = "error")
+}
+if(!all(rownames(x) %in% fdata$protein_id))
+{
+  append_log("expressionset fData() column 'protein_id' must contain an entry for each 'rowname' of matrix x", type = "error")
+}
+if(ncol(x) != nrow(pdata) || !all(colnames(x) == pdata$sample_id))
+{
+  append_log("expressionset pData() must align with matrix x; each row in pdata must describe a column in x AND the pdata column 'sample_id' must match column names of x", type = "error")
+}
 
-  # create ExpressionSet with empty feature/protocol data
-  eset_proteins = Biobase::ExpressionSet(
-    assayData = x,
-    featureData = Biobase::annotatedDataFrameFrom(x, byrow = T),
-    protocolData = Biobase::annotatedDataFrameFrom(x, byrow = F)
-  )
+# create ExpressionSet with empty feature/protocol data
+eset_proteins = Biobase::ExpressionSet(
+  assayData = x,
+  featureData = Biobase::annotatedDataFrameFrom(x, byrow = T),
+  protocolData = Biobase::annotatedDataFrameFrom(x, byrow = F)
+)
 
-  # transfer metadata
-  Biobase::fData(eset_proteins) = fdata[match(rownames(x), fdata$protein_id), !grepl("sequence|peptide", colnames(fdata), ignore.case = T), drop=F]
-  Biobase::pData(eset_proteins) = pdata
+# transfer metadata
+Biobase::fData(eset_proteins) = fdata[match(rownames(x), fdata$protein_id), !grepl("sequence|peptide", colnames(fdata), ignore.case = T), drop=F]
+Biobase::pData(eset_proteins) = pdata
   
-  ### ranvars
-   ranvars = ranvars_matrix = NULL
-    for(v in unique(dataset$dea_random_variables)) {
-      # v is a column name in dataset$samples (here we use the subset thereof for this contrast), x are the metadata values for respective column
-      x = samples_for_contrast %>% pull(!!v)
-      xu = unique(x) # don't re-arrange/sort !
-      xi = match(x, xu)
-      # because `samples_for_contrast` table was sorted by condition upstream, and condition are either 1 or 2, we can compare the random variables `x` using match(x, unique(x))
-      # debug; print(cbind(samples_for_contrast$condition, match(x, unique(x)), x))
-      x_aligns_with_condition = xi == samples_for_contrast$condition
+### ranvars
+# random_variables a vector of column names in your sample metadata table that are added as additional(!) regression terms in each statistical contrast tested downstream. Note that not all DEA algorithms may support this, consult documentation on individual methods for more info.
+dataset$dea_random_variables = random_variables = colnames(dataset$samples)[1:18]
 
-      if(
-        # 1) drop ranvars that align with the condition
-        # is the 'random variable' not the same as the condition/contrast? criterium: at least 10% of all samples in contrast must differ (or 2)
-        # May occur if user is testing many contrasts, one of which is a minor subset of the data (for which there are no differences in for instance the sample batch)
-        length(xu) > 1 && sum(!x_aligns_with_condition) >= max(2, ceiling(nrow(samples_for_contrast) * .1)) &&
-        # 2) drop duplicate ranvars. test the indices `xi` against ranvars from previous iterations (apply function to each column in matrix, test if all elements overlap with `xi`)
-        # we must check within contrast and cannot completely check while specifying ranvars upsteam, e.g. perhaps 2 metadata properties overlap in a subset of samples that are tested in some contrast
-        (length(ranvars_matrix) == 0 || !any(apply(ranvars_matrix, 2, function(col) all(col==xi))))
-      ) {
-        ranvars = c(ranvars, v)
-        ranvars_matrix = cbind(ranvars_matrix, xi)
-      }
-    }
+ranvars = ranvars_matrix = NULL
+for(v in unique(dataset$dea_random_variables)) {
+  # v is a column name in dataset$samples (here we use the subset thereof for this contrast), x are the metadata values for respective column
+  x = samples_for_contrast %>% pull(!!v)
+  xu = unique(x) # don't re-arrange/sort !
+  xi = match(x, xu)
+  # because `samples_for_contrast` table was sorted by condition upstream, and condition are either 1 or 2, we can compare the random variables `x` using match(x, unique(x))
+  # debug; print(cbind(samples_for_contrast$condition, match(x, unique(x)), x))
+  x_aligns_with_condition = xi == samples_for_contrast$condition
+
+  if(
+    # 1) drop ranvars that align with the condition
+    # is the 'random variable' not the same as the condition/contrast? criterium: at least 10% of all samples in contrast must differ (or 2)
+    # May occur if user is testing many contrasts, one of which is a minor subset of the data (for which there are no differences in for instance the sample batch)
+    length(xu) > 1 && sum(!x_aligns_with_condition) >= max(2, ceiling(nrow(samples_for_contrast) * .1)) &&
+    # 2) drop duplicate ranvars. test the indices `xi` against ranvars from previous iterations (apply function to each column in matrix, test if all elements overlap with `xi`)
+    # we must check within contrast and cannot completely check while specifying ranvars upsteam, e.g. perhaps 2 metadata properties overlap in a subset of samples that are tested in some contrast
+    (length(ranvars_matrix) == 0 || !any(apply(ranvars_matrix, 2, function(col) all(col==xi))))
+  ) {
+    ranvars = c(ranvars, v)
+    ranvars_matrix = cbind(ranvars_matrix, xi)
+  }
+}
+
+rm(m)
+   
+   
+    
+
+
+contr_fc_signif = dea_protein_background_foldchange_limits(eset_proteins)
+# round the foldchange cutoff so users can get the the exact same results when they use the reported value
+contr_fc_signif = round(contr_fc_signif, digits = 3)
+append_log(sprintf("log2 foldchange threshold estimated by bootstrap analysis: %s", contr_fc_signif), type = "info")
+
+
+tib = tibble()
+ 
+### dea algo
+algo_de = c( "my_dea_stats")
+for(alg in algo_de) {
+  # if (alg == "ebayes") {
+  #       # DEBUG_esetprot <<- eset_proteins
+  #       # DEBUG_esetpep <<- eset_peptides
+  #       tib = bind_rows(tib, de_ebayes(eset_proteins=eset_proteins, input_intensities_are_log2 = T, random_variables = ranvars))
+  #       alg_matched = T
+  #     }
+  alg_fun = match.fun(alg)
+        alg_result = alg_fun(peptides=peptides_for_contrast, 
+                             samples=samples_for_contrast, 
+                             eset_peptides=eset_peptides, 
+                             eset_proteins=eset_proteins, 
+                             input_intensities_are_log2 = T, 
+                             random_variables = ranvars)
+        # validation checks on expected output, to facilitate debugging/feedback for custom implementations
+        if(!is_tibble(alg_result) || nrow(alg_result) == 0 || !all(c("protein_id", "pvalue", "qvalue", "foldchange.log2", "algo_de") %in% colnames(alg_result))) 
+        {
+          append_log(sprintf("provided custom function for differential expression analysis '%s' must return a non-empty tibble with the columns protein_id|pvalue|qvalue|foldchange.log2|algo_de", alg), type = "error")
+        }
+        alg_result_name = unique(alg_result$algo_de)
+        if(length(alg_result_name) != 1 || !is.character(alg_result_name) || nchar(alg_result_name) < 2 || alg_result_name %in% c("ebayes", "msempire", "msqrob", "msqrobsum", "combined"))
+        {
+          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in algo_de column (must be a single non-empty character string uniquely indicating the name/label of your method. cannot be either of ebayes|msempire|msqrob|msqrobsum|combined)", alg), type = "error")
+        }
+        if(!all(!is.na(alg_result$protein_id) & alg_result$protein_id %in% peptides_for_contrast$protein_id))
+        {
+          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in protein_id column (either NA or not found in provided data structures)", alg), type = "error")
+        }
+        if(!all( (is.na(alg_result$pvalue) | is.numeric(alg_result$pvalue)) &
+                 (is.na(alg_result$qvalue) | is.numeric(alg_result$qvalue)) &
+                 (is.na(alg_result$foldchange.log2) | is.numeric(alg_result$foldchange.log2)) ))
+        {
+          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in pvalue|qvalue|foldchange.log2 columns (can only be NA or numeric)", alg), type = "error")
+        }
+        # finally, concatenate results
+        tib = bind_rows(tib, alg_result)
+}
 ```
