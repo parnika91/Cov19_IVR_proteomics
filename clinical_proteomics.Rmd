@@ -23,7 +23,6 @@ library(tidyverse)
 
 ```
 
-
 ```{r get_swissprot_fasta}
 # proteinIds <- read.delim("~/Downloads/muelledm@20210812+1504_50-0075/report.tsv") %>%
 #   select(Protein.Ids) %>%
@@ -100,22 +99,22 @@ dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT_visit_0", "AZ
 # following benchmarks in the MS-DAP manuscript, for DDA we recommend to set no or minimal requirements on 'detect' parameters; "filter_fraction_detect = 0" and "filter_min_detect = 0" (or 1 if you want at least 1 MS/MS detect per peptide per sample group)
 dataset = analysis_quickstart(
   dataset,
-  filter_min_detect = 3,         # each peptide must have a good confidence score in at least N samples per group
+  filter_min_detect = 2,         # each peptide must have a good confidence score in at least N samples per group
   filter_min_quant = 3,          # similarly, the number of reps where the peptide must have a quantitative value
   filter_fraction_detect = 0.5, # each peptide must have a good confidence score in at least 75% of samples per group
   filter_fraction_quant = 0.5,  # analogous for quantitative values
   filter_by_contrast = T,     # only relevant if dataset has 3+ groups. For DEA at each contrast, filters and normalization are applied on the subset of relevant samples within the contrast for efficiency, see further MS-DAP manuscript. Set to FALSE to disable and use traditional "global filtering" (filters are applied to all sample groups, same data table used in all statistics)
   norm_algorithm = c("vsn", "modebetween"), # normalization; first vsn, then modebetween on protein-level (applied sequentially so the MS-DAP modebetween algorithm corrects scaling/balance between-sample-groups)
-  dea_algorithm = c("ebayes", "deqms", "msempire"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
+  dea_algorithm = c("ebayes", "deqms", "msempire", "my_dea_stats"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
   dea_qvalue_threshold = 0.1,                      # threshold for significance of adjusted p-values in figures and output tables
-  dea_log2foldchange_threshold = NA,                # threshold for significance of log2 foldchanges. 0 = disable, NA = automatically infer through bootstrapping
+  dea_log2foldchange_threshold = 0.4,                # threshold for significance of log2 foldchanges. 0 = disable, NA = automatically infer through bootstrapping
   diffdetect_min_samples_observed = 1,
   pca_sample_labels = "auto",
   output_qc_report = TRUE,                          # optionally, set to FALSE to skip the creation of the QC report (not recommended for first-time use)
   output_abundance_tables = TRUE,                   # optionally, disable the creation of abundance table output files
   output_dir = "msdap_results",                    # output directory, here set to "msdap_results" within your working directory. Alternatively provide a full path, eg; output_dir="C:/path/to/myproject",
   output_within_timestamped_subdirectory = TRUE,
-  dump_all_data = T
+  dump_all_data = F
   )
 # print a short summary of results at the end
 print_dataset_summary(dataset)
@@ -156,13 +155,30 @@ my_dea_stats = function(peptides, samples, eset_peptides, eset_proteins, input_i
   ### 2) calculate p-values for each protein
   pval = rep(NA, nrow(x))
   for(i in 1:nrow(x)) {
-    i_tt = t.test(x[i,cols_grp1], x[i,cols_grp2], alternative = "two.sided", paired = FALSE, var.equal = FALSE)
+    # if(length(x[i,cols_grp1]) != length(x[i,cols_grp2]))
+    # {
+    # bigger_by = abs(length(x[i,cols_grp1]) - length(x[i,cols_grp2]))
+    # if((length(x[i,cols_grp1]) - bigger_by) == length(x[i,cols_grp2]))
+    # {
+    #   x1 <- sample(x[i,cols_grp1], size = (length(x[i,cols_grp1]) - bigger_by))
+    # }else{
+    #   x1 <- x[i,cols_grp1]
+    # }
+    # if((length(x[i,cols_grp2]) - bigger_by) == length(x[i,cols_grp1]))
+    # {
+    #   x2 <- sample(x[i,cols_grp2], size = (length(x[i,cols_grp2]) - bigger_by))
+    # }else{
+    #   x2 <- x[i,cols_grp2]
+    # }
+    # }
+    
+    i_tt = t.test(x[i,cols_grp1], x[i,cols_grp2], alternative = "two.sided", paired = F, var.equal = F)
     pval[i] = i_tt$p.value
   }
   # log2 fold-change
   log2FC = rowMeans(x[,cols_grp2,drop=F], na.rm=T) - rowMeans(x[,cols_grp1,drop=F], na.rm=T)
 
-  ### 3) create a result tibble that contains all columns required for downstream compatability with this pipeline; protein_id, pvalue, qvalue, foldchange.log2, algo_de
+  ### 3) create a result tibble that contains all columns required for downstream compatibility with this pipeline; protein_id, pvalue, qvalue, foldchange.log2, algo_de
   result = tibble(protein_id = rownames(x),
                   pvalue = pval,
                   qvalue = p.adjust(pval, method = "fdr"),
@@ -170,7 +186,7 @@ my_dea_stats = function(peptides, samples, eset_peptides, eset_proteins, input_i
                   # the name of your algorithm. must be a non-empty character string uniquely indicating the name/label of your method (eg; do NOT use names already used by other methods in this pipeline, like 'ebayes')
                   algo_de = "my_dea_stats")
 
-  cat("Example custom DEA implementation, my_dea_stats(), yielded", sum(is.finite(result$qvalue) & result$qvalue<=0.5), "hits at qvalue<=0.01\n")
+  cat("Example custom DEA implementation, my_dea_stats(), yielded", sum(is.finite(result$qvalue) & result$qvalue<=0.1), "hits at qvalue<=0.1\n")
   return(result)
 }
 
@@ -179,26 +195,16 @@ dataset = analysis_quickstart(dataset,
                               filter_min_quant = 3,
                               norm_algorithm = c("vsn", "modebetween"), # custom norm !
                               dea_algorithm = c("ebayes", "my_dea_stats"), # we use good ol' eBayes for reference, and our custom dea !
-                              dea_qvalue_threshold = 0.01,
+                              dea_qvalue_threshold = 0.5,
                               dea_log2foldchange_threshold = NA, # estimate a fold-change threshold for proteins to be significant
-                              output_qc_report = FALSE, # disabled in this document, but do create a QC report when testing code to review those volcano's, p-value and foldchange distributions !
+                              output_qc_report = T, # disabled in this document, but do create a QC report when testing code to review those volcano's, p-value and foldchange distributions !
                               output_dir = "msdap_results", # optionally, change the output directory (now files are printed to the working directory)
                               output_within_timestamped_subdirectory = TRUE)
 
 ```
 
-```{r output}
-print(dataset$de_proteins %>% 
-        group_by(algo_de) %>% 
-        summarise(`1% FDR` = sum(qvalue <= 0.1),
-                  `1% FDR AND foldchange threshold` = sum(qvalue <= 0.1 & signif)))
-
-gplots::venn(list(ebayes=dataset$de_proteins %>% filter(algo_de=="ebayes" & qvalue <= 0.1) %>% pull(protein_id),
-                  my_dea_stats=dataset$de_proteins %>% filter(algo_de=="my_dea_stats" & qvalue <= 0.1) %>% pull(protein_id)))
-```
-
 ```{r manual}
-#### functions
+### functions
 as_matrix_except_first_column = function(x)
 {
   if (is_tibble(x)) 
@@ -219,7 +225,6 @@ get_column_intensity = function(peptides, contr_lbl = NA)
 }
 
 # dea_protein_background_foldchange_limits
-    #' @importFrom arrangements combinations
 dea_protein_background_foldchange_limits = function(eset, probs = 0.95, max_permutations = 100) {
   pd = Biobase::pData(eset)
   x = Biobase::exprs(eset)
@@ -365,7 +370,7 @@ if(!("protein_id" %in% colnames(fdata)))
 {
   append_log("expressionset fData() must contain column 'protein_id'", type = "error")
 }
-if(!all(rownames(x) %in% fdata$protein_id))
+if(!all(rownames(x) %in% fdata$protein_id))`
 {
   append_log("expressionset fData() column 'protein_id' must contain an entry for each 'rowname' of matrix x", type = "error")
 }
@@ -415,19 +420,14 @@ for(v in unique(dataset$dea_random_variables)) {
 
 rm(m)
    
-   
-    
-
-
 contr_fc_signif = dea_protein_background_foldchange_limits(eset_proteins)
 # round the foldchange cutoff so users can get the the exact same results when they use the reported value
 contr_fc_signif = round(contr_fc_signif, digits = 3)
 append_log(sprintf("log2 foldchange threshold estimated by bootstrap analysis: %s", contr_fc_signif), type = "info")
 
-
-tib = tibble()
- 
 ### dea algo
+tib = tibble()
+
 algo_de = c( "my_dea_stats")
 for(alg in algo_de) {
   # if (alg == "ebayes") {
@@ -444,7 +444,7 @@ for(alg in algo_de) {
                              input_intensities_are_log2 = T, 
                              random_variables = ranvars)
         # validation checks on expected output, to facilitate debugging/feedback for custom implementations
-        if(!is_tibble(alg_result) || nrow(alg_result) == 0 || !all(c("protein_id", "pvalue", "qvalue", "foldchange.log2", "algo_de") %in% colnames(alg_result))) 
+        if(!is_tibble(alg_result) || nrow(alg_result) == 0 || !all(c("protein_id", "pvalue", "qvalue", "foldchange.log2", "algo_de") %in%   colnames(alg_result))) 
         {
           append_log(sprintf("provided custom function for differential expression analysis '%s' must return a non-empty tibble with the columns protein_id|pvalue|qvalue|foldchange.log2|algo_de", alg), type = "error")
         }
