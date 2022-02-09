@@ -6,3 +6,7 @@
 msdap_results/
 
 *.RData
+
+*.png
+
+*.pdf
