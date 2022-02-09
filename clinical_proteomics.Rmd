@@ -1,18 +1,16 @@
 ---
-title: "Vaccine clinical samples proteomics"
-output: html_notebook
+title: "BNT_BNT clinical samples proteomics"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    toc: TRUE
 ---
 ### Proteomics using MS-DAP
 The samples were all prepared and analysed within the same batch and then analysed with DIA-NN.
 
-```{r, echo = F}
-# install.packages(c("tidyverse", "tinytex", "BiocManager"))
-# library(tidyverse)
-# tinytex::install_tinytex()
-# # On Windows; say 'no' to optionally compile packages and during TinyTex installation you may see 2 popups; these can be dismissed
-# BiocManager::install(c('ProtGenerics', 'MSnbase', 'limma'), update=T, ask=F)
-# Sys.setenv(R_REMOTES_NO_ERRORS_FROM_WARNINGS="true")
-# install.packages("devtools")
+```{r, echo = F, message=FALSE, warning = F}
+ opts = list(comment = FALSE)
 library(devtools)
 #devtools::install_github("https://github.com/vdemichev/diann-rpackage")
 library(diann)
@@ -20,10 +18,12 @@ library(diann)
 library(msdap)
 library(readxl)
 library(tidyverse)
-
+library(ggplot2)
+library(ggrepel)
+library(reshape2)
 ```
 
-```{r get_swissprot_fasta}
+```{r get_swissprot_fasta, echo = F}
 # proteinIds <- read.delim("~/Downloads/muelledm@20210812+1504_50-0075/report.tsv") %>%
 #   select(Protein.Ids) %>%
 #   distinct()
@@ -31,7 +31,7 @@ library(tidyverse)
 # write.csv(IDs, "../human_Swissport_IDs_clinical_vaccine_COVID.csv")
 ```
 
-```{r preprocess}
+```{r preprocess, echo = F, eval = F}
 
 report <- read.delim("../report.tsv") 
 report <- report %>% 
@@ -54,21 +54,21 @@ write.table(report_modified, file='../report_IVR.tsv', quote=FALSE, sep='\t', ro
 ```
 
 
-```{r}
+```{r, echo = F, eval = F}
 
 write_template_for_sample_metadata(dataset, "../sample_metadata.xlsx", overwrite = T)
-orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") 
-orig_meta <- orig_meta %>% 
+orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx")
+orig_meta <- orig_meta %>%
   mutate(sample_id = sapply(orig_meta$sample_id, function(x) paste0(x, ".rawIdx")))
   #%>% na.omit()
 
-IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx") 
+IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx")
 IVR_meta <- IVR_meta %>%
-  rename(plate_row = x3) %>% 
-  mutate(Run = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
-  inner_join(., meta, by = "Run") %>% 
-  select(!c(x1, x2, x4, group.x)) %>% 
-  rename(group = group.y) %>% 
+  rename(plate_row = x3) %>%
+  mutate(Run = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>%
+  inner_join(., meta, by = "Run") %>%
+  select(!c(x1, x2, x4, group.x)) %>%
+  rename(group = group.y) %>%
   select(!Run)
 openxlsx::write.xlsx(IVR_meta, file = "../sample_metadata.xlsx", overwrite = T)
 #write.csv(IVR_meta, "../sample_metadata.xlsx", row.names = F)
@@ -81,389 +81,221 @@ dataset = import_fasta(dataset, files = "../20200406_Human-isoform-uniprot-prote
 dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata_modified.xlsx")
 ```
 
-```{r}
 
-# 5) Optionally, describe a statistical contrast; in this example we compare sample groups "WT" and "KO".
-# - You should use exact same labels as "group" column in sample metadata table.
-# - If you don't want to do stats, simply remove or comment this line (e.g. just look at QC report, or maybe your dataset has 1 experimental group only).
-# - example for multiple contrasts; dataset = setup_contrasts(dataset, contrast_list = list( c("control", "condition_a"),  c("control", "condition_b")  ) )
-# - example for adding random variables to eBayes/DEqMS/MSqRob regressions to i.e. counter batch effects (note; these variables must be column names present in sample metadata table. double-check with; print(dataset$samples,n=Inf)): dataset = setup_contrasts(dataset, contrast_list = list(  c("WT","KO")  ), random_variables = c("induction", "batch") )
-dataset = setup_contrasts(dataset, contrast_list = list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"), c("AZD_BNT_visit_0", "AZD_BNT_visit_4"), c("AZD_BNT_visit_0", "AZD_BNT_visit_8"), c("AZD_BNT_visit_5", "AZD_BNT_visit_6"),
-                                                        c("BNT_BNT_visit_0", "BNT_BNT_visit_1"), c("BNT_BNT_visit_0", "BNT_BNT_visit_4"), c("BNT_BNT_visit_0", "BNT_BNT_visit_8"), c("BNT_BNT_visit_5", "BNT_BNT_visit_6")))
-```
+## Volcano plots
+```{r in-house to select diff abund proteins from msdap results, fig.dim=c(10,10), message=FALSE, warning = F}
 
-```{r}
-# 6) Main function that runs the entire pipeline
-# for DIA, recommended settings are defined below, selecting only peptides that were confidently detected in most samples
-# for DDA, 'confident detection' relies on MS/MS which may be more rare (relying on match-between-runs instead)
-# following benchmarks in the MS-DAP manuscript, for DDA we recommend to set no or minimal requirements on 'detect' parameters; "filter_fraction_detect = 0" and "filter_min_detect = 0" (or 1 if you want at least 1 MS/MS detect per peptide per sample group)
+volcano_plot <- function(dataset, contrast_list, algorithm)
+{
+  dataset$de_proteins %>% 
+    select(protein_id, pvalue, qvalue, contrast, foldchange.log2, algo_de) %>% 
+    #mutate(contrast = str_split(contrast, ": ", simplify = T)[,2]) %>% 
+    left_join(., dataset$proteins) %>% 
+    select(-fasta_headers, -accessions) %>% 
+    rename(geneID = gene_symbols_or_id) %>% 
+    filter(algo_de %in% algorithm) -> de 
+  
+  de %>% 
+    rename(fc = starts_with("foldchange")) %>% 
+    mutate(logPval = -log10(pvalue+(1e-8))) %>% 
+    mutate(logQval = -log10(qvalue+(1e-8))) %>% 
+    mutate(col = case_when(
+      logPval >= 1.3 & abs(fc) >= 0.2 ~ "deepskyblue4",
+      logPval < 1.3 & abs(fc) >= 0.2 ~ "firebrick",
+      logPval >= 1.3 & abs(fc) < 0.2 ~ "darkolivegreen",
+      TRUE ~ "gray"
+    )) %>% 
+    mutate(label = case_when(
+      logPval < 1.3 & abs(fc) < 0.2 ~ "",
+      TRUE ~ geneID
+    )) %>% 
+    mutate(shape = case_when(
+      logQval >= 1.3 & abs(fc) >= 0.2 ~ 8,
+      TRUE ~ 16,
+      )) -> df
+  
+  for(i in algorithm)
+    print(
+      df %>% 
+        filter(algo_de == i)  %>% 
+      
+        ggplot(aes(x = fc, y = logPval, colour = col, label = geneID, shape = shape)) +
+        geom_point() +
+        scale_colour_identity() +
+        scale_shape_identity() +
+        theme_bw() +
+        geom_hline(yintercept = 1.3, linetype = "dashed", colour = "gray84") +
+        geom_vline(xintercept = 0.2, linetype = "dashed", colour = "gray84") +
+        geom_vline(xintercept = -0.2, linetype = "dashed", colour = "gray84") +
+        facet_wrap(~ contrast, scales = "free", ncol = 2) +
+        geom_text_repel(size = 2.2) +
+        xlab("log2 fold change") +
+        ylab("-log10 p-value") +
+        ggtitle(i)
+    )
+  # ggsave(paste(strsplit(contrast_list[[1]][1], split = "visit")[[1]][1],
+  #              "volcano.pdf", sep = ""))
+  #return(p1)
+}
+
+
+dataset = import_dataset_diann(filename = "../report_IVR.tsv")
+dataset = import_fasta(dataset, 
+                       files = "../20200406_Human-isoform-uniprot-proteome-3AUP000005640.fasta")
+dataset = import_sample_metadata(dataset, 
+                                 filename = "../sample_metadata_modified.xlsx")
+
+# contrast_list <- list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
+#                        c("AZD_BNT_visit_0", "AZD_BNT_visit_4"),
+#                        c("AZD_BNT_visit_0", "AZD_BNT_visit_5"),
+#                        c("AZD_BNT_visit_5", "AZD_BNT_visit_6"),
+#                        c("AZD_BNT_visit_5", "AZD_BNT_visit_8"))
+
+contrast_list <- list(c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
+                       c("BNT_BNT_visit_0", "BNT_BNT_visit_4"),
+                       c("BNT_BNT_visit_0", "BNT_BNT_visit_5"),
+                       c("BNT_BNT_visit_5", "BNT_BNT_visit_6"),
+                       c("BNT_BNT_visit_5", "BNT_BNT_visit_8"))
+algorithm <- c("ebayes", "deqms", "msempire") #"ebayes", "deqms", "msempire"
+
+
+dataset = setup_contrasts(dataset, contrast_list = contrast_list)
+  
 dataset = analysis_quickstart(
   dataset,
-  filter_min_detect = 2,         # each peptide must have a good confidence score in at least N samples per group
-  filter_min_quant = 3,          # similarly, the number of reps where the peptide must have a quantitative value
-  filter_fraction_detect = 0.5, # each peptide must have a good confidence score in at least 75% of samples per group
-  filter_fraction_quant = 0.5,  # analogous for quantitative values
-  filter_by_contrast = T,     # only relevant if dataset has 3+ groups. For DEA at each contrast, filters and normalization are applied on the subset of relevant samples within the contrast for efficiency, see further MS-DAP manuscript. Set to FALSE to disable and use traditional "global filtering" (filters are applied to all sample groups, same data table used in all statistics)
-  norm_algorithm = c("vsn", "modebetween"), # normalization; first vsn, then modebetween on protein-level (applied sequentially so the MS-DAP modebetween algorithm corrects scaling/balance between-sample-groups)
-  dea_algorithm = c("ebayes", "deqms", "msempire", "my_dea_stats"), #, "msempire", "msqrob" # statistics; apply multiple methods in parallel/independently
-  dea_qvalue_threshold = 0.1,                      # threshold for significance of adjusted p-values in figures and output tables
-  dea_log2foldchange_threshold = 0.4,                # threshold for significance of log2 foldchanges. 0 = disable, NA = automatically infer through bootstrapping
+  filter_min_detect = 2,         
+  filter_min_quant = 3,         
+  filter_fraction_detect = 0.5, 
+  filter_fraction_quant = 0.5,  
+  filter_by_contrast = T,     
+  norm_algorithm = c("vsn", "modebetween"),
+  dea_algorithm = algorithm, 
+  dea_qvalue_threshold = 0.1,                      
+  dea_log2foldchange_threshold = 0.2,                
   diffdetect_min_samples_observed = 1,
   pca_sample_labels = "auto",
-  output_qc_report = TRUE,                          # optionally, set to FALSE to skip the creation of the QC report (not recommended for first-time use)
-  output_abundance_tables = TRUE,                   # optionally, disable the creation of abundance table output files
-  output_dir = "msdap_results",                    # output directory, here set to "msdap_results" within your working directory. Alternatively provide a full path, eg; output_dir="C:/path/to/myproject",
-  output_within_timestamped_subdirectory = TRUE,
+  output_qc_report = F,                          
+  output_abundance_tables = TRUE,                   
+  output_dir = "msdap_results",                    
+  output_within_timestamped_subdirectory = F,
   dump_all_data = F
   )
-# print a short summary of results at the end
-print_dataset_summary(dataset)
+  
+  
+volcano_plot(dataset, contrast_list, algorithm)
 
-# 7) All done! Check out the generated files in the output directory, starting with report.pdf
-```
-
-```{r}
-
-my_norm = function(x_as_log2, mask_sample_groups = NA, ...) {
-  cat("Example custom normalization implementation, my_norm(), scaling all samples by some quantile\n")
-  quantile_for_normalization = 0.95
-  # value at quantile x for each column/sample
-  scale_per_sample = matrixStats::colQuantiles(x_as_log2, probs = quantile_for_normalization, na.rm=T)
-  # instead of scaling samples such that quantile x is zero, adjust by mean shift so output values are of the same order as input
-  scale_per_sample = scale_per_sample - mean(scale_per_sample)
-  # apply scaling to each column (transpose, scale 'rows', then transpose again)
-  return(t(t(x_as_log2) - scale_per_sample))
-}
-
-my_dea_stats = function(peptides, samples, eset_peptides, eset_proteins, input_intensities_are_log2, random_variables, ...) {
-  ### 1) from provided protein-level data; extract the protein intensity matrix, to which condition each sample belongs and find the columns matching groups 1 and 2
-  x = Biobase::exprs(eset_proteins)
-  # transform to log2 if input data is non-log
-  if (!input_intensities_are_log2) {
-    x = log2(x)
-  }
-  # set non-finite values to NA
-  x[!is.finite(x)] = NA
-  # extract groups
-  x_groups = Biobase::pData(eset_proteins)$condition
-  x_groups_unique = unique(x_groups)
-  # assume there are 2 groups
-  stopifnot(length(x_groups_unique) == 2)
-  cols_grp1 = x_groups == x_groups_unique[1]
-  cols_grp2 = x_groups == x_groups_unique[2]
-
-  ### 2) calculate p-values for each protein
-  pval = rep(NA, nrow(x))
-  for(i in 1:nrow(x)) {
-    # if(length(x[i,cols_grp1]) != length(x[i,cols_grp2]))
-    # {
-    # bigger_by = abs(length(x[i,cols_grp1]) - length(x[i,cols_grp2]))
-    # if((length(x[i,cols_grp1]) - bigger_by) == length(x[i,cols_grp2]))
-    # {
-    #   x1 <- sample(x[i,cols_grp1], size = (length(x[i,cols_grp1]) - bigger_by))
-    # }else{
-    #   x1 <- x[i,cols_grp1]
-    # }
-    # if((length(x[i,cols_grp2]) - bigger_by) == length(x[i,cols_grp1]))
-    # {
-    #   x2 <- sample(x[i,cols_grp2], size = (length(x[i,cols_grp2]) - bigger_by))
-    # }else{
-    #   x2 <- x[i,cols_grp2]
-    # }
-    # }
-    
-    i_tt = t.test(x[i,cols_grp1], x[i,cols_grp2], alternative = "two.sided", paired = F, var.equal = F)
-    pval[i] = i_tt$p.value
-  }
-  # log2 fold-change
-  log2FC = rowMeans(x[,cols_grp2,drop=F], na.rm=T) - rowMeans(x[,cols_grp1,drop=F], na.rm=T)
-
-  ### 3) create a result tibble that contains all columns required for downstream compatibility with this pipeline; protein_id, pvalue, qvalue, foldchange.log2, algo_de
-  result = tibble(protein_id = rownames(x),
-                  pvalue = pval,
-                  qvalue = p.adjust(pval, method = "fdr"),
-                  foldchange.log2 = log2FC,
-                  # the name of your algorithm. must be a non-empty character string uniquely indicating the name/label of your method (eg; do NOT use names already used by other methods in this pipeline, like 'ebayes')
-                  algo_de = "my_dea_stats")
-
-  cat("Example custom DEA implementation, my_dea_stats(), yielded", sum(is.finite(result$qvalue) & result$qvalue<=0.1), "hits at qvalue<=0.1\n")
-  return(result)
-}
-
-dataset = analysis_quickstart(dataset,
-                              filter_min_detect = 2,
-                              filter_min_quant = 3,
-                              norm_algorithm = c("vsn", "modebetween"), # custom norm !
-                              dea_algorithm = c("ebayes", "my_dea_stats"), # we use good ol' eBayes for reference, and our custom dea !
-                              dea_qvalue_threshold = 0.5,
-                              dea_log2foldchange_threshold = NA, # estimate a fold-change threshold for proteins to be significant
-                              output_qc_report = T, # disabled in this document, but do create a QC report when testing code to review those volcano's, p-value and foldchange distributions !
-                              output_dir = "msdap_results", # optionally, change the output directory (now files are printed to the working directory)
-                              output_within_timestamped_subdirectory = TRUE)
 
 ```
 
-```{r manual}
-### functions
-as_matrix_except_first_column = function(x)
+
+## Boxplot to see protein abundance trend
+```{r boxplots, results = "asis"}
+
+boxplot_function <- function(dataset, contrast_list)
 {
-  if (is_tibble(x)) 
+  contrast_unlist <- contrast_list %>%
+    unlist() %>%
+    unique()
+
+  genelist <- dataset$de_proteins %>%
+    filter(pvalue <= 0.05 & foldchange.log2 >= 0.2) %>%
+    left_join(., dataset$proteins) %>%
+    select(-fasta_headers, -accessions) %>% 
+    group_by(gene_symbols_or_id) %>% 
+    mutate(sigannot = case_when(
+      qvalue <= 0.05 & foldchange.log2 >= 0.2 ~ "_p.adj",
+      TRUE ~ "",
+    )) %>% 
+    select(gene_symbols_or_id, sigannot)
+  
+  unique_genes <- unique(genelist$gene_symbols_or_id)
+  for(i in unique_genes)
   {
-    x = as.data.frame(x, stringsAsFactors = F)
-  }
-  rownames(x) = x[, 1]
-  as.matrix(x[, -1, drop = F])
-}
-
-get_column_intensity = function(peptides, contr_lbl = NA)
-{
-  ref = c("filter by contrast" = paste0("intensity_", contr_lbl),
-          "global data filter" = "intensity_all_group",
-          "custom filtering and normalization" = "intensity_norm",
-          "input data as-is" = "intensity")
-  return(ref[ref %in% colnames(peptides)][1])
-}
-
-# dea_protein_background_foldchange_limits
-dea_protein_background_foldchange_limits = function(eset, probs = 0.95, max_permutations = 100) {
-  pd = Biobase::pData(eset)
-  x = Biobase::exprs(eset)
-
-  samples_cond1 = pd$sample_id[pd$condition == 1] # letters[1:3]
-  samples_cond2 = pd$sample_id[pd$condition == 2] # LETTERS[1:4]
-
-  set.seed(1234)
-
-
-  ## number of samples to swap around
-  # if both groups are equal size, we can get by with floor(m/2) which is slightly more efficient. eg; 2 groups of 3 samples -->> swapping 1 sample from group A to B is the same as swapping 2 samples
-  m = min(length(samples_cond1), length(samples_cond2))
-  if(length(samples_cond1) == length(samples_cond2)) {
-    n_swap = floor(m / 2)
-  } else {
-    n_swap = ceiling(m / 2)
-  }
-# use the arrangements package for efficiently calculating a *random subset* of all permutations
-  # rationale: generating all combinations is not feasible for some datasets (eg; group of 50+ samples)
-  # rationale: taking first N combinations would bias the subset of selected samples towards the first few (as the output of combination is in lexicographical order)
-  ncomb_1 = arrangements::ncombinations(x = length(samples_cond1), k = n_swap, bigz = T)
-  ncomb_2 = arrangements::ncombinations(x = length(samples_cond2), k = n_swap, bigz = T)
-
-  # if 'raw' type, there were so many combinations that the number returned by ncombinations is a big-int
-  if(typeof(ncomb_1) == "raw") {
-    ncomb_1 = max_permutations
-  } else {
-    ncomb_1 = min(max_permutations, ncomb_1)
-  }
-  if(typeof(ncomb_2) == "raw") {
-    ncomb_2 = max_permutations
-  } else {
-    ncomb_2 = min(max_permutations, ncomb_2)
-  }
-
-  # select a random number of k-sample subsets
-  samples_swap_cond1 = arrangements::combinations(x = seq_along(samples_cond1), k = n_swap, nsample = ncomb_1, layout = "list")
-  samples_swap_cond2 = arrangements::combinations(x = seq_along(samples_cond2), k = n_swap, nsample = ncomb_2, layout = "list")
-
-
-  ## comb = combination of indices in samples_swap_cond*
-  # if there are many unique combinations in each condition, we do not have to recycle any subsets thereby maximizing the coverage of samples used in permutation analysis
-  if(length(samples_swap_cond1) >= max_permutations && length(samples_swap_cond2) >= max_permutations) {
-    comb = data.frame(i1 = 1:max_permutations, i2 = 1:max_permutations)
-  } else {
-    # to reach the desired number of permutations, combine subsets between conditions (prevent combinatorial explosion at expand.grid() )
-    comb = expand.grid(i1 = 1:min(length(samples_swap_cond1), floor(max_permutations / m)), i2 = 1:min(length(samples_swap_cond2), floor(max_permutations / m)))
-
-    # check if expand.grid() yielded too many combinations
-    if(nrow(comb) > max_permutations) {
-      comb = comb[sample(1:nrow(comb), max_permutations), ]
+    pos = which(genelist$gene_symbols_or_id == i)
+    if(any(genelist$sigannot[pos] == "_p.adj"))
+      genelist[pos,3] <- paste(i, "_p.adj", sep = "")
+    else{
+      genelist[pos,3] <- i
     }
   }
+  
+  genelist <- genelist %>% 
+    rename(gene_sigannot = "...3") %>% 
+    select(gene_symbols_or_id, gene_sigannot) %>% 
+    distinct()
 
+  sample_id <- dataset$samples %>%
+    filter(exclude == FALSE) %>% 
+    mutate(sample_id = str_replace(sample_id, "-", "\\.")) %>%
+    mutate(sample_used = paste(group, sample_id, sep = "_")) %>%
+    filter(group %in% contrast_unlist)
 
-  ## compute foldchange distributions from permuted sample labels
-  # allocate memory for all foldchanges
-  fc_matrix = matrix(0.0, nrow=nrow(x), ncol=nrow(comb))
-  # iterate label swaps
-  for(i in 1:nrow(comb)) { #i=1
-    # 'permuted' sample identities for each condition + remaining samples
-    j = comb[i,]
-    sample_id_cond1 = c(samples_cond2[samples_swap_cond2[[j$i2]]], setdiff(samples_cond1, samples_cond1[samples_swap_cond1[[j$i1]]]))
-    sample_id_cond2 = c(samples_cond1[samples_swap_cond1[[j$i1]]], setdiff(samples_cond2, samples_cond2[samples_swap_cond2[[j$i2]]]))
-    # print(i); print(sample_id_cond1); print(sample_id_cond2)
+  prot_used <- read.delim("msdap_results/results/protein_abundance__input data as-is.tsv") %>%
+    setNames(str_replace(colnames(.), "X", "")) %>%
+    select(gene_symbols_or_id,
+           ends_with(sample_id$sample_id)) %>%
+    filter(gene_symbols_or_id %in% genelist$gene_symbols_or_id) %>% 
+    left_join(genelist)
 
-    # foldchange by simply taking mean value in each group
-    x1 = matrixStats::rowMeans2(x[,colnames(x) %in% sample_id_cond1, drop=F], na.rm = T)
-    x2 = matrixStats::rowMeans2(x[,colnames(x) %in% sample_id_cond2, drop=F], na.rm = T)
-    fc_matrix[,i] = x1 - x2
+  # because duplicate rownames are not allowed:
+  .rowNamesDF(prot_used, make.names = T) <- prot_used$gene_sigannot
+
+  prot_used_long <- prot_used %>%
+    select(-gene_symbols_or_id, -gene_sigannot) %>% 
+    t() %>%
+    as.data.frame()
+    
+    prot_used_long$group = sapply(rownames(prot_used_long), 
+                                  function(x) sample_id$group[grep(pattern = x, 
+                                                                         sample_id$sample_id)])
+    
+ 
+
+  prot_long_melt <- melt(prot_used_long, id = "group") %>%
+    rename(gene = "variable",
+         abundance = "value") %>% 
+    na.omit() #%>%
+    #filter(gene %in% c("SAA1.SAA2", "C9", "LBP", "SERPINA3", "APOA4", "LRG1", "ITIH4"))
+ 
+    # boxplot to show increase and decrease of protein abundances
+  unique_genes_gg <- unique(prot_long_melt$gene)
+  for(i in unique_genes_gg)
+  {
+    cat("  \n###", i, "  \n")
+    print(
+      prot_long_melt %>% 
+        filter(gene == i) %>% 
+        ggplot(aes(x = group, y = abundance, colour = group)) +
+          geom_jitter() +
+          geom_boxplot(alpha = 0.2) +
+          #facet_wrap(~ i, scales = "free", ncol = 1) +
+          theme_bw() +
+          ylab("log2 (protein abundance)") +
+          ggtitle(i) +
+          theme(axis.ticks.x = element_blank(),
+              axis.text.x = element_blank())
+        )
+    cat("  \n")
   }
 
-  # we should not infer a-symmetric foldchange thresholds from the permutation data, so take the largest absolute value
-  return(max(abs(quantile(fc_matrix, probs = c(1-probs, probs), na.rm = T))))
+  #ggsave(plot = p2, "AZD_BNT_boxplot.pdf", units = "cm", width = 30, height = 10)
+  #return(prot_long_melt)
 }
 
-### random vars
-dataset$dea_random_variables = random_variables = colnames(dataset$samples)
+boxplot_function(dataset, contrast_list)
 
-
-### contrasts
-column_contrasts = dataset_contrasts(dataset)
-col_contr = column_contrasts[1]
-col_contr_intensity = get_column_intensity(dataset$peptides, col_contr)
-
-### samples and peptides for contrast
-samples_for_contrast = dataset$samples %>%
-      select(sample_id, shortname, group, condition = !!col_contr, everything()) %>%
-      filter(condition != 0) %>%
-      arrange(condition)
-
-peptides_for_contrast = dataset$peptides %>%
-      select(sample_id, protein_id, peptide_id, 
-             sequence_plain, sequence_modified, detect, 
-             intensity=!!as.character(col_contr_intensity)) %>%
-      filter(sample_id %in% samples_for_contrast$sample_id & is.finite(intensity))
-
-### tibble as eset function
-peptides = peptides_for_contrast
-proteins = dataset$proteins
-samples = samples_for_contrast
-peptide_intensities = as_matrix_except_first_column(peptides %>%
-                                                        select(peptide_id, sample_id, intensity) %>%
-                                                        spread(sample_id, intensity))
-
-# order the columns/samples as specified in `samples`
-j = order(match(colnames(peptide_intensities), samples$sample_id))  # example; order(match(c("a", "c", "x", "b"), letters[1:3]))
-peptide_intensities = peptide_intensities[,j,drop=F]
-
-# create ExpressionSet with empty feature/protocol data
-eset = Biobase::ExpressionSet(
-  assayData = peptide_intensities,
-  featureData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = T),
-  protocolData = Biobase::annotatedDataFrameFrom(peptide_intensities, byrow = F)
-)
-sid = rownames(Biobase::pData(eset))
-Biobase::pData(eset) = data.frame(samples %>% slice(match(sid, sample_id)), row.names = sid)
-
-### peptides -->> protein metadata
-pid = rownames(Biobase::fData(eset))
-pep = peptides %>%
-  select(peptide_id, sequence_plain, sequence_modified, protein_id) %>%
-  slice(match(pid, peptide_id)) %>%
-  left_join(proteins, by = "protein_id")
-
-Biobase::fData(eset) = data.frame(pep, row.names = pid)
-eset_peptides <- eset
-
-# rollup peptide abundance matrix to protein-level
-m = rollup_pep2prot(peptides_for_contrast, 
-                    intensity_is_log2 = T,
-                    algo_rollup = "maxlfq_diann", 
-                    return_as_matrix = T)
-m = m[,match(colnames(Biobase::exprs(eset_peptides)), colnames(m)),drop=F]
-  
-#eset_proteins = protein_eset_from_data(m, eset = eset_peptides)
-x = m
-eset = eset_peptides
-fdata = Biobase::fData(eset)
-pdata = Biobase::pData(eset)
-if(!("protein_id" %in% colnames(fdata)))
-{
-  append_log("expressionset fData() must contain column 'protein_id'", type = "error")
-}
-if(!all(rownames(x) %in% fdata$protein_id))`
-{
-  append_log("expressionset fData() column 'protein_id' must contain an entry for each 'rowname' of matrix x", type = "error")
-}
-if(ncol(x) != nrow(pdata) || !all(colnames(x) == pdata$sample_id))
-{
-  append_log("expressionset pData() must align with matrix x; each row in pdata must describe a column in x AND the pdata column 'sample_id' must match column names of x", type = "error")
-}
-
-# create ExpressionSet with empty feature/protocol data
-eset_proteins = Biobase::ExpressionSet(
-  assayData = x,
-  featureData = Biobase::annotatedDataFrameFrom(x, byrow = T),
-  protocolData = Biobase::annotatedDataFrameFrom(x, byrow = F)
-)
-
-# transfer metadata
-Biobase::fData(eset_proteins) = fdata[match(rownames(x), fdata$protein_id), !grepl("sequence|peptide", colnames(fdata), ignore.case = T), drop=F]
-Biobase::pData(eset_proteins) = pdata
-  
-### ranvars
-# random_variables a vector of column names in your sample metadata table that are added as additional(!) regression terms in each statistical contrast tested downstream. Note that not all DEA algorithms may support this, consult documentation on individual methods for more info.
-dataset$dea_random_variables = random_variables = colnames(dataset$samples)[1:18]
-
-ranvars = ranvars_matrix = NULL
-for(v in unique(dataset$dea_random_variables)) {
-  # v is a column name in dataset$samples (here we use the subset thereof for this contrast), x are the metadata values for respective column
-  x = samples_for_contrast %>% pull(!!v)
-  xu = unique(x) # don't re-arrange/sort !
-  xi = match(x, xu)
-  # because `samples_for_contrast` table was sorted by condition upstream, and condition are either 1 or 2, we can compare the random variables `x` using match(x, unique(x))
-  # debug; print(cbind(samples_for_contrast$condition, match(x, unique(x)), x))
-  x_aligns_with_condition = xi == samples_for_contrast$condition
-
-  if(
-    # 1) drop ranvars that align with the condition
-    # is the 'random variable' not the same as the condition/contrast? criterium: at least 10% of all samples in contrast must differ (or 2)
-    # May occur if user is testing many contrasts, one of which is a minor subset of the data (for which there are no differences in for instance the sample batch)
-    length(xu) > 1 && sum(!x_aligns_with_condition) >= max(2, ceiling(nrow(samples_for_contrast) * .1)) &&
-    # 2) drop duplicate ranvars. test the indices `xi` against ranvars from previous iterations (apply function to each column in matrix, test if all elements overlap with `xi`)
-    # we must check within contrast and cannot completely check while specifying ranvars upsteam, e.g. perhaps 2 metadata properties overlap in a subset of samples that are tested in some contrast
-    (length(ranvars_matrix) == 0 || !any(apply(ranvars_matrix, 2, function(col) all(col==xi))))
-  ) {
-    ranvars = c(ranvars, v)
-    ranvars_matrix = cbind(ranvars_matrix, xi)
-  }
-}
-
-rm(m)
-   
-contr_fc_signif = dea_protein_background_foldchange_limits(eset_proteins)
-# round the foldchange cutoff so users can get the the exact same results when they use the reported value
-contr_fc_signif = round(contr_fc_signif, digits = 3)
-append_log(sprintf("log2 foldchange threshold estimated by bootstrap analysis: %s", contr_fc_signif), type = "info")
-
-### dea algo
-tib = tibble()
-
-algo_de = c( "my_dea_stats")
-for(alg in algo_de) {
-  # if (alg == "ebayes") {
-  #       # DEBUG_esetprot <<- eset_proteins
-  #       # DEBUG_esetpep <<- eset_peptides
-  #       tib = bind_rows(tib, de_ebayes(eset_proteins=eset_proteins, input_intensities_are_log2 = T, random_variables = ranvars))
-  #       alg_matched = T
-  #     }
-  alg_fun = match.fun(alg)
-        alg_result = alg_fun(peptides=peptides_for_contrast, 
-                             samples=samples_for_contrast, 
-                             eset_peptides=eset_peptides, 
-                             eset_proteins=eset_proteins, 
-                             input_intensities_are_log2 = T, 
-                             random_variables = ranvars)
-        # validation checks on expected output, to facilitate debugging/feedback for custom implementations
-        if(!is_tibble(alg_result) || nrow(alg_result) == 0 || !all(c("protein_id", "pvalue", "qvalue", "foldchange.log2", "algo_de") %in%   colnames(alg_result))) 
-        {
-          append_log(sprintf("provided custom function for differential expression analysis '%s' must return a non-empty tibble with the columns protein_id|pvalue|qvalue|foldchange.log2|algo_de", alg), type = "error")
-        }
-        alg_result_name = unique(alg_result$algo_de)
-        if(length(alg_result_name) != 1 || !is.character(alg_result_name) || nchar(alg_result_name) < 2 || alg_result_name %in% c("ebayes", "msempire", "msqrob", "msqrobsum", "combined"))
-        {
-          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in algo_de column (must be a single non-empty character string uniquely indicating the name/label of your method. cannot be either of ebayes|msempire|msqrob|msqrobsum|combined)", alg), type = "error")
-        }
-        if(!all(!is.na(alg_result$protein_id) & alg_result$protein_id %in% peptides_for_contrast$protein_id))
-        {
-          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in protein_id column (either NA or not found in provided data structures)", alg), type = "error")
-        }
-        if(!all( (is.na(alg_result$pvalue) | is.numeric(alg_result$pvalue)) &
-                 (is.na(alg_result$qvalue) | is.numeric(alg_result$qvalue)) &
-                 (is.na(alg_result$foldchange.log2) | is.numeric(alg_result$foldchange.log2)) ))
-        {
-          append_log(sprintf("provided custom function for differential expression analysis '%s' contains invalid values in pvalue|qvalue|foldchange.log2 columns (can only be NA or numeric)", alg), type = "error")
-        }
-        # finally, concatenate results
-        tib = bind_rows(tib, alg_result)
-}
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
