@@ -1,5 +1,5 @@
 ---
-title: "BNT_BNT paired clinical samples proteomics"
+title: "AZD_BNT paired clinical samples proteomics"
 output:
   pdf_document: default
   html_document:
@@ -27,9 +27,8 @@ library(reshape2)
 
 ```{r paired_AZD_BNT}
 AZD_BNT_meta <- read_excel("../sample_metadata_modified.xlsx") %>% 
-  #filter(exclude == 0) %>% 
+  filter(exclude == 0) %>% 
   filter(vacc_group == "AZD_BNT")
-AZD_BNT_meta$exclude <- 0
 
 AZD_BNT_groups <- AZD_BNT_meta %>% 
   group_by(donor) %>% 
@@ -51,7 +50,7 @@ AZD_BNT_groups <- AZD_BNT_groups %>%
 
 ```{r paired_BNT_BNT}
 BNT_BNT_meta <- read_excel("../sample_metadata_modified.xlsx") %>% 
-  #filter(exclude == 0) %>% 
+  filter(exclude == 0) %>% 
   filter(vacc_group == "BNT_BNT")
 
 BNT_BNT_groups <- BNT_BNT_meta %>% 
@@ -71,82 +70,28 @@ BNT_BNT_groups <- BNT_BNT_groups %>%
   filter(num_timepoints == 4)
 ```
 
-```{r accummulate_vacc_groups}
-paired_groups <- rbind(AZD_BNT_groups, BNT_BNT_groups)
-# modified exclude column in metadata manually
-```
+<!-- ```{r accummulate_vacc_groups} -->
+<!-- paired_groups <- rbind(AZD_BNT_groups, BNT_BNT_groups) -->
+<!-- # modified exclude column in metadata manually -->
+<!-- ``` -->
 
 ```{r analysis}
 dataset = import_dataset_diann(filename = "../report_IVR.tsv")
 dataset = import_fasta(dataset, files = "../20200406_Human-isoform-uniprot-proteome-3AUP000005640.fasta")
 dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata_modified.xlsx")
-
-```
-
-
-## Volcano plots
-```{r in-house to select diff abund proteins from msdap results, fig.dim=c(10,8), message=FALSE, warning = F}
-
-volcano_plot <- function(dataset, contrast_list, algorithm)
-{
-  dataset$de_proteins %>% 
-    select(protein_id, pvalue, qvalue, contrast, foldchange.log2, algo_de) %>% 
-    #mutate(contrast = str_split(contrast, ": ", simplify = T)[,2]) %>% 
-    left_join(., dataset$proteins) %>% 
-    select(-fasta_headers, -accessions) %>% 
-    rename(geneID = gene_symbols_or_id) %>% 
-    filter(algo_de %in% algorithm) -> de 
-  
-  de %>% 
-    rename(fc = starts_with("foldchange")) %>% 
-    mutate(logPval = -log10(pvalue+(1e-8))) %>% 
-    mutate(logQval = -log10(qvalue+(1e-8))) %>% 
-    mutate(col = case_when(
-      logPval >= 1.3 & abs(fc) >= 0.2 ~ "deepskyblue4",
-      logPval < 1.3 & abs(fc) >= 0.2 ~ "firebrick",
-      logPval >= 1.3 & abs(fc) < 0.2 ~ "darkolivegreen",
-      TRUE ~ "gray"
-    )) %>% 
-    mutate(label = case_when(
-      logPval < 1.3 & abs(fc) < 0.2 ~ "",
-      TRUE ~ geneID
-    )) %>% 
-    mutate(shape = case_when(
-      logQval >= 1.3 & abs(fc) >= 0.2 ~ 8,
-      TRUE ~ 16,
-      )) -> df
-  
-  for(i in algorithm)
-    print(
-      df %>% 
-        filter(algo_de == i)  %>% 
-      
-        ggplot(aes(x = fc, y = logPval, colour = col, label = geneID, shape = shape)) +
-        geom_point() +
-        scale_colour_identity() +
-        scale_shape_identity() +
-        theme_bw() +
-        geom_hline(yintercept = 1.3, linetype = "dashed", colour = "gray84") +
-        geom_vline(xintercept = 0.2, linetype = "dashed", colour = "gray84") +
-        geom_vline(xintercept = -0.2, linetype = "dashed", colour = "gray84") +
-        facet_wrap(~ contrast, scales = "free", ncol = 2) +
-        geom_text_repel(size = 2.2) +
-        xlab("log2 fold change") +
-        ylab("-log10 p-value") +
-        ggtitle(i)
-    )
-  # ggsave(paste(strsplit(contrast_list[[1]][1], split = "visit")[[1]][1],
-  #              "volcano.pdf", sep = ""))
-  #return(p1)
-}
+#dataset[["samples"]]$exclude <- FALSE
 
 # contrast_list <- list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
 #                        c("AZD_BNT_visit_5", "AZD_BNT_visit_6"))
 
-contrast_list <- list(c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
-                       c("BNT_BNT_visit_5", "BNT_BNT_visit_6"),
-                      c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
-                       c("AZD_BNT_visit_5", "AZD_BNT_visit_6"))
+# contrast_list <- list(c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
+#                        c("BNT_BNT_visit_5", "BNT_BNT_visit_6"))
+
+contrast_list <- list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
+                       c("AZD_BNT_visit_5", "AZD_BNT_visit_6"),
+                      c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
+                        c("BNT_BNT_visit_5", "BNT_BNT_visit_6")
+                      )
 algorithm <- c("ebayes") #"ebayes", "deqms", "msempire"
 
 
@@ -165,15 +110,109 @@ dataset = analysis_quickstart(
   dea_log2foldchange_threshold = 0.2,                
   diffdetect_min_samples_observed = 1,
   pca_sample_labels = "auto",
-  output_qc_report = T,                          
+  output_qc_report = F,                          
   output_abundance_tables = TRUE,                   
   output_dir = "msdap_results",                    
-  output_within_timestamped_subdirectory = T,
+  output_within_timestamped_subdirectory = F,
   dump_all_data = F
   )
   
+```
+
+
+## Volcano plots
+```{r in-house to select diff abund proteins from msdap results, fig.dim=c(10,8), message=FALSE, warning = F}
+
+volcano_plot <- function(dataset, contrast_list, algorithm)
+{
+  dataset$de_proteins %>% 
+    select(protein_id, pvalue, qvalue, contrast, foldchange.log2, algo_de) %>% 
+    #mutate(contrast = str_split(contrast, ": ", simplify = T)[,2]) %>% 
+    left_join(., dataset$proteins) %>% 
+    select(-fasta_headers, -accessions) %>% 
+    rename(geneID = gene_symbols_or_id) %>% 
+    filter(dea_algorithm %in% algorithm) -> de 
   
+  de %>% 
+    rename(fc = starts_with("foldchange")) %>% 
+    mutate(logPval = -log10(pvalue+(1e-8))) %>% 
+    mutate(logQval = -log10(qvalue+(1e-8))) %>% 
+    mutate(col = case_when(
+      logPval >= 1.3 & abs(fc) >= 0.2 ~ "deepskyblue4",
+      logPval < 1.3 & abs(fc) >= 0.2 ~ "firebrick",
+      logPval >= 1.3 & abs(fc) < 0.2 ~ "darkolivegreen",
+      TRUE ~ "gray"
+    )) %>% 
+    mutate(geneID = ifelse(test = grepl(geneID, pattern = ";"), yes = str_extract(string = geneID, pattern = ".*(?=;)"), no = geneID )) %>% 
+    mutate(label = case_when(
+      #logPval < 1.3 & abs(fc) < 0.2 ~ "",
+      #TRUE ~ geneID
+      col == "deepskyblue4" ~ geneID,
+      .default = ""
+    )) %>% 
+    mutate(shape = case_when(
+      logQval >= 1.3 & abs(fc) >= 0.2 ~ 8,
+      TRUE ~ 16,
+      )) %>% 
+    mutate(size = case_when(
+      col == "deepskyblue4" ~ 4,
+      .default = 3)) -> df
+  
+# New facet label names for supp variable
+labs <- c("BNT/BNT visit 0 vs 1", "BNT/BNT visit 5 vs 6", 
+          "AZD/BNT visit 0 vs 1", "AZD/BNT visit 5 vs 6")
+names(labs) <- c("contrast: BNT_BNT_visit_0 vs BNT_BNT_visit_1", "contrast: BNT_BNT_visit_5 vs BNT_BNT_visit_6", 
+                      "contrast: AZD_BNT_visit_0 vs AZD_BNT_visit_1", "contrast: AZD_BNT_visit_5 vs AZD_BNT_visit_6")
+
+# vaccine_labeller <- function(variable,value){
+#   return(labs[value])
+# }
+
+  
+  #for(i in 1:length(contrast_list))
+    print(
+    df %>% 
+        #filter(contrast == paste0("contrast: ", contrast_list[[i]][1], " vs ", contrast_list[[i]][2], collapse = ""))  %>% 
+      
+        ggplot(aes(x = fc, y = logPval, 
+                   colour = col, 
+                   label = geneID, 
+                   shape = shape,
+                   #size = size
+                   )) +
+        geom_point(alpha = 0.7, size = 4) +
+        #scale_size_identity() +
+        scale_colour_identity() +
+        scale_shape_identity() +
+        theme_bw() +
+        geom_hline(yintercept = 1.3, linetype = "dashed", colour = "gray84") +
+        geom_vline(xintercept = 0.2, linetype = "dashed", colour = "gray84") +
+        geom_vline(xintercept = -0.2, linetype = "dashed", colour = "gray84") +
+        facet_wrap(~ contrast, 
+                   ncol = 2,
+                   labeller = as_labeller(labs)) +
+        geom_text_repel(size = 4, box.padding = 0.5, max.overlaps = 100) +
+        theme_bw() +
+        theme(strip.background =element_rect(fill="aliceblue", colour = "white"),
+              strip.text.x = element_text(size = 11),
+              axis.text = element_text(size = 10)) +
+        # ylim(0, 4.5) +
+        # xlim(-1.7, 1.7) +
+        xlab("Log2 Fold Change") +
+        ylab("-Log10 P-value")
+        
+        )# +
+        # ggtitle(paste0(contrast_list[[i]][1], " vs ", contrast_list[[i]][2], collapse = ""))
+    #)
+  #ggsave(paste0(contrast_list[[i]][1], "_vs_", contrast_list[[i]][2], ".pdf", collapse = ""))
+  
+  #return(p1)
+}
+
+png("AZD5_BNT6_paired_volcano_all_visits.png", res = 300, height = 15, width = 15, units = "cm")
 volcano_plot(dataset, contrast_list, algorithm)
+dev.off()
+
 ```
 
 
@@ -188,12 +227,12 @@ boxplot_function <- function(dataset, contrast_list)
   vacc_group <- substr(contrast_unlist[1], 1, 7)
 
   genelist <- dataset$de_proteins %>%
-    filter(pvalue <= 0.05 & foldchange.log2 >= 0.2) %>%
+    filter(pvalue <= 0.05 & abs(foldchange.log2) >= 0.2) %>%
     left_join(., dataset$proteins) %>%
     select(-fasta_headers, -accessions) %>% 
     group_by(gene_symbols_or_id) %>% 
     mutate(sigannot = case_when(
-      qvalue <= 0.05 & foldchange.log2 >= 0.2 ~ "_p.adj",
+      qvalue <= 0.05 & abs(foldchange.log2) >= 0.2 ~ "_p.adj",
       TRUE ~ "",
     )) %>% 
     select(gene_symbols_or_id, sigannot)
@@ -209,8 +248,8 @@ boxplot_function <- function(dataset, contrast_list)
     }
   }
   
+  colnames(genelist)[3] <- c("gene_sigannot")
   genelist <- genelist %>% 
-    rename(gene_sigannot = "...3") %>% 
     select(gene_symbols_or_id, gene_sigannot) %>% 
     distinct()
 
@@ -235,23 +274,181 @@ boxplot_function <- function(dataset, contrast_list)
     t() %>%
     as.data.frame()
     
-    prot_used_long$group = sapply(rownames(prot_used_long), 
+  prot_used_long$group = sapply(rownames(prot_used_long), 
                                   function(x) sample_id$group[grep(pattern = x, 
                                                                          sample_id$sample_id)])
-    prot_used_long$donor = sapply(rownames(prot_used_long), 
+  prot_used_long$donor = sapply(rownames(prot_used_long), 
                                   function(x) sample_id$donor[grep(pattern = x, 
                                                                          sample_id$sample_id)])
     
     
- 
-
   prot_long_melt <- melt(prot_used_long, id = c("group", "donor")) %>%
     rename(gene = "variable",
          abundance = "value") %>% 
     na.omit() %>%
-    separate(group, c("vacc", "visit_num"), "BNT_", remove = F) %>% 
+    separate(group, c("vacc", "visit_num"), "_visit", remove = F) %>% 
+    mutate(visit_num = paste("visit", visit_num, sep = "")) %>%
     select(-vacc)
     #filter(gene %in% c("SAA1.SAA2", "C9", "LBP", "SERPINA3", "APOA4", "LRG1", "ITIH4"))
+  
+  # prot_long_melt <- melt(prot_used_long, id = "group") %>%
+  #   rename(gene = "variable",
+  #        abundance = "value") %>% 
+  #   mutate(abundance = as.numeric(abundance)) %>% 
+  #   na.omit() %>%
+  #   separate(group, c("vacc", "visit_num"), "_visit", remove = F) %>% 
+  #   mutate(visit_num = paste("visit", visit_num, sep = "")) %>%
+  #   select(-vacc)
+  
+  # boxplot to show increase and decrease of protein abundances
+  unique_genes_gg <- unique(prot_long_melt$gene)
+  
+  for(i in unique_genes_gg)
+  {
+    svg(paste0("BNT_BNT_paired_boxplot_v0_v1_v5_v6_",i, ".svg"))
+    cat("  \n###", i, "  \n")
+    print(
+      prot_long_melt %>% 
+        filter(gene == i) %>% 
+        ggplot(aes(x = visit_num, y = abundance)) +
+        geom_boxplot(alpha = 0.5, 
+                     aes(colour = visit_num)) +
+        geom_line(aes(group = donor, 
+                      linetype = donor), 
+                  colour = "darkgrey", 
+                  dodge = position_jitterdodge(0.3)) +
+        geom_point(aes(colour = visit_num),
+                   dodge = position_jitterdodge(0.3)) +
+        #facet_wrap(~ i, scales = "free", ncol = 1) +
+        theme_bw() +
+        ylab("log2 (protein abundance)") +
+        xlab(paste(vacc_group, "timepoint")) +
+        labs(colour = paste(vacc_group, "timepoints")) +
+        ggtitle(i) +
+        theme(axis.ticks.x = element_blank())
+        )
+    cat("  \n")
+    dev.off()
+  }
+  
+  
+  #return(prot_long_melt)
+}
+
+boxplot_function(dataset, contrast_list)
+```
+
+```{r boxplot_fc}
+contrast_list_fcbox <- list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
+                      c("AZD_BNT_visit_0", "AZD_BNT_visit_5"),
+                       c("AZD_BNT_visit_0", "AZD_BNT_visit_6"))
+
+# contrast_list <- list(c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
+#                       c("BNT_BNT_visit_0", "BNT_BNT_visit_5"),
+#                        c("BNT_BNT_visit_5", "BNT_BNT_visit_6"))
+algorithm <- c("ebayes") #"ebayes", "deqms", "msempire"
+
+
+dataset_fcbox = setup_contrasts(dataset, contrast_list = contrast_list_fcbox)
+  
+dataset_fcbox = analysis_quickstart(
+  dataset_fcbox,
+  filter_min_detect = 2,         
+  filter_min_quant = 3,         
+  filter_fraction_detect = 0.5, 
+  filter_fraction_quant = 0.5,  
+  filter_by_contrast = T,     
+  norm_algorithm = c("vsn", "modebetween"),
+  dea_algorithm = algorithm, 
+  dea_qvalue_threshold = 0.1,                      
+  dea_log2foldchange_threshold = 0.2,                
+  diffdetect_min_samples_observed = 1,
+  pca_sample_labels = "auto",
+  output_qc_report = F,                          
+  output_abundance_tables = TRUE,                   
+  output_dir = "msdap_results",                    
+  output_within_timestamped_subdirectory = F,
+  dump_all_data = F
+  )
+  
+boxplot_fcbox_function <- function(dataset, contrast_list)
+{
+  contrast_unlist <- contrast_list %>%
+    unlist() %>%
+    unique()
+  
+  vacc_group <- substr(contrast_unlist[1], 1, 7)
+
+  genelist <- dataset$de_proteins %>%
+    filter(pvalue <= 0.05 & abs(foldchange.log2) >= 0.2) %>%
+    left_join(., dataset$proteins) %>%
+    select(-fasta_headers, -accessions) %>% 
+    group_by(gene_symbols_or_id) %>% 
+    mutate(sigannot = case_when(
+      qvalue <= 0.05 & abs(foldchange.log2) >= 0.2 ~ "_p.adj",
+      TRUE ~ "",
+    )) %>% 
+    select(gene_symbols_or_id, sigannot)
+  
+  unique_genes <- unique(genelist$gene_symbols_or_id)
+  for(i in unique_genes)
+  {
+    pos = which(genelist$gene_symbols_or_id == i)
+    if(any(genelist$sigannot[pos] == "_p.adj"))
+      genelist[pos,3] <- paste(i, "_p.adj", sep = "")
+    else{
+      genelist[pos,3] <- i
+    }
+  }
+  
+  colnames(genelist)[3] <- c("gene_sigannot")
+  genelist <- genelist %>% 
+    select(gene_symbols_or_id, gene_sigannot) %>% 
+    distinct()
+  
+  fctab <- dataset$de_proteins %>%
+    left_join(., dataset$proteins) %>%
+    # irrespective of what their P-values were
+    filter(gene_symbols_or_id %in% genelist$gene_symbols_or_id) %>% 
+    select(-fasta_headers, -accessions)
+
+  # sample_id <- dataset$samples %>%
+  #   filter(exclude == FALSE) %>% 
+  #   mutate(sample_id = str_replace(sample_id, "-", "\\.")) %>%
+  #   mutate(sample_used = paste(group, sample_id, sep = "_")) %>%
+  #   filter(group %in% contrast_unlist)
+  # 
+  # prot_used <- read.delim("msdap_results/results/protein_abundance__input data as-is.tsv") %>%
+  #   setNames(str_replace(colnames(.), "X", "")) %>%
+  #   select(gene_symbols_or_id,
+  #          ends_with(sample_id$sample_id)) %>%
+  #   filter(gene_symbols_or_id %in% genelist$gene_symbols_or_id) %>% 
+  #   left_join(genelist)
+  # 
+  # # because duplicate rownames are not allowed:
+  # .rowNamesDF(prot_used, make.names = T) <- prot_used$gene_sigannot
+  # 
+  # prot_used_long <- prot_used %>%
+  #   select(-gene_symbols_or_id, -gene_sigannot) %>% 
+  #   t() %>%
+  #   as.data.frame()
+  #   
+  # prot_used_long$group = sapply(rownames(prot_used_long), 
+  #                                 function(x) sample_id$group[grep(pattern = x, 
+  #                                                                        sample_id$sample_id)])
+  # prot_used_long$donor = sapply(rownames(prot_used_long), 
+  #                                 function(x) sample_id$donor[grep(pattern = x, 
+  #                                                                        sample_id$sample_id)])
+  #   
+  #   
+  # prot_long_melt <- melt(prot_used_long, id = c("group", "donor")) %>%
+  #   rename(gene = "variable",
+  #        abundance = "value") %>% 
+  #   na.omit() %>%
+  #   separate(group, c("vacc", "visit_num"), "BNT_", remove = F) %>% 
+  #   select(-vacc)
+  #   #filter(gene %in% c("SAA1.SAA2", "C9", "LBP", "SERPINA3", "APOA4", "LRG1", "ITIH4"))
+  # 
   
   # boxplot to show increase and decrease of protein abundances
   unique_genes_gg <- unique(prot_long_melt$gene)
@@ -285,5 +482,4 @@ boxplot_function <- function(dataset, contrast_list)
   #return(prot_long_melt)
 }
 
-boxplot_function(dataset, contrast_list)
 ```
