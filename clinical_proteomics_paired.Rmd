@@ -1,12 +1,12 @@
 ---
-title: "BNT_BNT clinical samples proteomics"
+title: "BNT_BNT paired clinical samples proteomics"
 output:
   pdf_document: default
   html_document:
     df_print: paged
     toc: TRUE
 ---
-### Proteomics using MS-DAP
+### Proteomics using MS-DAP for paired samples
 The samples were all prepared and analysed within the same batch and then analysed with DIA-NN.
 
 ```{r, echo = F, message=FALSE, warning = F}
@@ -23,67 +23,69 @@ library(ggrepel)
 library(reshape2)
 ```
 
-```{r get_swissprot_fasta, echo = F}
-# proteinIds <- read.delim("~/Downloads/muelledm@20210812+1504_50-0075/report.tsv") %>%
-#   select(Protein.Ids) %>%
-#   distinct()
-# IDs = sapply(., function(x) unlist(strsplit(x, ";")))
-# write.csv(IDs, "../human_Swissport_IDs_clinical_vaccine_COVID.csv")
-```
+# Paired samples analysis
 
-```{r preprocess, echo = F, eval = F}
+```{r paired_AZD_BNT}
+AZD_BNT_meta <- read_excel("../sample_metadata_modified.xlsx") %>% 
+  #filter(exclude == 0) %>% 
+  filter(vacc_group == "AZD_BNT")
+AZD_BNT_meta$exclude <- 0
 
-report <- read.delim("../report.tsv") 
-report <- report %>% 
-  mutate(Run = sapply(report$Run, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>% 
-  mutate(Precursor.Quantity = log2(Precursor.Quantity+0.00001))
-meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx") %>% 
+AZD_BNT_groups <- AZD_BNT_meta %>% 
+  group_by(donor) %>% 
+  separate(visit, c("visit_", "visit_num"), "_", remove = F) %>% 
+  select(-c(visit_)) %>% 
+  mutate(visit_num = as.numeric(visit_num)) %>% 
+  arrange(visit_num, .by_group = T) %>% 
+  select(visit_num, donor) %>% 
   na.omit() %>% 
-  rename(Run = sample_id) %>% 
-  mutate(group = paste(vacc_group, visit, sep = "_")) #paste(vacc_group, visit, sep = "_")
+  filter(visit_num %in% c(0,1,5,6))
 
-#get report index
-meta_run =  data.frame(Run = meta$Run)
-report_run = data.frame(Run = report$Run)
+table(AZD_BNT_groups$donor)
 
-report_modified <- left_join(meta_run, report)
-
-#openxlsx::write.xlsx(report_modified, file = "../report_IVR.xlsx", overwrite = T)
-write.table(report_modified, file='../report_IVR.tsv', quote=FALSE, sep='\t', row.names = F)
+AZD_BNT_groups <- AZD_BNT_groups %>% 
+  summarise(num_timepoints = n()) %>% 
+  filter(num_timepoints == 4)
 
 ```
 
+```{r paired_BNT_BNT}
+BNT_BNT_meta <- read_excel("../sample_metadata_modified.xlsx") %>% 
+  #filter(exclude == 0) %>% 
+  filter(vacc_group == "BNT_BNT")
 
-```{r, echo = F, eval = F}
+BNT_BNT_groups <- BNT_BNT_meta %>% 
+  group_by(donor) %>% 
+  separate(visit, c("visit_", "visit_num"), "_", remove = F) %>% 
+  select(-c(visit_)) %>% 
+  mutate(visit_num = as.numeric(visit_num)) %>% 
+  arrange(visit_num, .by_group = T) %>% 
+  select(visit_num, donor) %>% 
+  na.omit() %>% 
+  filter(visit_num %in% c(0,1,5,6))
 
-write_template_for_sample_metadata(dataset, "../sample_metadata.xlsx", overwrite = T)
-orig_meta <- read_excel("../20210909_50-0075_InnateVaccineResponse.xlsx")
-orig_meta <- orig_meta %>%
-  mutate(sample_id = sapply(orig_meta$sample_id, function(x) paste0(x, ".rawIdx")))
-  #%>% na.omit()
+table(BNT_BNT_groups$donor)
 
-IVR_meta <- openxlsx::read.xlsx("../sample_metadata.xlsx")
-IVR_meta <- IVR_meta %>%
-  rename(plate_row = x3) %>%
-  mutate(Run = sapply(IVR_meta$sample_id, function(x) strsplit(x, ".", fixed = T)[[1]][1])) %>%
-  inner_join(., meta, by = "Run") %>%
-  select(!c(x1, x2, x4, group.x)) %>%
-  rename(group = group.y) %>%
-  select(!Run)
-openxlsx::write.xlsx(IVR_meta, file = "../sample_metadata.xlsx", overwrite = T)
-#write.csv(IVR_meta, "../sample_metadata.xlsx", row.names = F)
+BNT_BNT_groups <- BNT_BNT_groups %>% 
+  summarise(num_timepoints = n()) %>% 
+  filter(num_timepoints == 4)
+```
 
-#filename <- "/home/parnika/Documents/Projects/COV19_vaccine_proteomics/sample_metadata.xlsx"
+```{r accummulate_vacc_groups}
+paired_groups <- rbind(AZD_BNT_groups, BNT_BNT_groups)
+# modified exclude column in metadata manually
+```
 
+```{r analysis}
 dataset = import_dataset_diann(filename = "../report_IVR.tsv")
 dataset = import_fasta(dataset, files = "../20200406_Human-isoform-uniprot-proteome-3AUP000005640.fasta")
-#dataset = import_fasta(dataset, files = "../human_proteome_IVR_covvac.fasta")
 dataset = msdap::import_sample_metadata(dataset, filename = "../sample_metadata_modified.xlsx")
+
 ```
 
 
 ## Volcano plots
-```{r in-house to select diff abund proteins from msdap results, fig.dim=c(10,10), message=FALSE, warning = F}
+```{r in-house to select diff abund proteins from msdap results, fig.dim=c(10,8), message=FALSE, warning = F}
 
 volcano_plot <- function(dataset, contrast_list, algorithm)
 {
@@ -138,25 +140,14 @@ volcano_plot <- function(dataset, contrast_list, algorithm)
   #return(p1)
 }
 
-
-dataset = import_dataset_diann(filename = "../report_IVR.tsv")
-dataset = import_fasta(dataset, 
-                       files = "../20200406_Human-isoform-uniprot-proteome-3AUP000005640.fasta")
-dataset = import_sample_metadata(dataset, 
-                                 filename = "../sample_metadata_modified.xlsx")
-
 # contrast_list <- list(c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
-#                        c("AZD_BNT_visit_0", "AZD_BNT_visit_4"),
-#                        c("AZD_BNT_visit_0", "AZD_BNT_visit_5"),
-#                        c("AZD_BNT_visit_5", "AZD_BNT_visit_6"),
-#                        c("AZD_BNT_visit_5", "AZD_BNT_visit_8"))
+#                        c("AZD_BNT_visit_5", "AZD_BNT_visit_6"))
 
 contrast_list <- list(c("BNT_BNT_visit_0", "BNT_BNT_visit_1"),
-                       c("BNT_BNT_visit_0", "BNT_BNT_visit_4"),
-                       c("BNT_BNT_visit_0", "BNT_BNT_visit_5"),
                        c("BNT_BNT_visit_5", "BNT_BNT_visit_6"),
-                       c("BNT_BNT_visit_5", "BNT_BNT_visit_8"))
-algorithm <- c("ebayes", "deqms", "msempire") #"ebayes", "deqms", "msempire"
+                      c("AZD_BNT_visit_0", "AZD_BNT_visit_1"),
+                       c("AZD_BNT_visit_5", "AZD_BNT_visit_6"))
+algorithm <- c("ebayes") #"ebayes", "deqms", "msempire"
 
 
 dataset = setup_contrasts(dataset, contrast_list = contrast_list)
@@ -174,23 +165,20 @@ dataset = analysis_quickstart(
   dea_log2foldchange_threshold = 0.2,                
   diffdetect_min_samples_observed = 1,
   pca_sample_labels = "auto",
-  output_qc_report = F,                          
+  output_qc_report = T,                          
   output_abundance_tables = TRUE,                   
   output_dir = "msdap_results",                    
-  output_within_timestamped_subdirectory = F,
+  output_within_timestamped_subdirectory = T,
   dump_all_data = F
   )
   
   
 volcano_plot(dataset, contrast_list, algorithm)
-
-
 ```
 
 
 ## Boxplot to see protein abundance trend
-```{r boxplots, results = "asis"}
-
+```{r boxplots, results = "asis", warning = F, message=FALSE}
 boxplot_function <- function(dataset, contrast_list)
 {
   contrast_unlist <- contrast_list %>%
@@ -253,17 +241,19 @@ boxplot_function <- function(dataset, contrast_list)
     prot_used_long$donor = sapply(rownames(prot_used_long), 
                                   function(x) sample_id$donor[grep(pattern = x, 
                                                                          sample_id$sample_id)])
-   
+    
+    
  
-  prot_long_melt <- melt(prot_used_long, id = "group") %>%
+
+  prot_long_melt <- melt(prot_used_long, id = c("group", "donor")) %>%
     rename(gene = "variable",
          abundance = "value") %>% 
     na.omit() %>%
     separate(group, c("vacc", "visit_num"), "BNT_", remove = F) %>% 
-    select(-vacc)#%>%
+    select(-vacc)
     #filter(gene %in% c("SAA1.SAA2", "C9", "LBP", "SERPINA3", "APOA4", "LRG1", "ITIH4"))
- 
-    # boxplot to show increase and decrease of protein abundances
+  
+  # boxplot to show increase and decrease of protein abundances
   unique_genes_gg <- unique(prot_long_melt$gene)
   for(i in unique_genes_gg)
   {
@@ -272,14 +262,19 @@ boxplot_function <- function(dataset, contrast_list)
       prot_long_melt %>% 
         filter(gene == i) %>% 
         ggplot(aes(x = visit_num, y = abundance)) +
-        geom_boxplot(alpha = 0.5, aes(colour = visit_num)) +
-        geom_line(aes(group = donor, linetype = donor), colour = "grey", dodge = position_jitterdodge(0.3)) +
-        geom_point(aes(colour = visit_num),dodge = position_jitterdodge(0.3)) +
+        geom_boxplot(alpha = 0.5, 
+                     aes(colour = visit_num)) +
+        geom_line(aes(group = donor, 
+                      linetype = donor), 
+                  colour = "darkgrey", 
+                  dodge = position_jitterdodge(0.3)) +
+        geom_point(aes(colour = visit_num),
+                   dodge = position_jitterdodge(0.3)) +
         #facet_wrap(~ i, scales = "free", ncol = 1) +
         theme_bw() +
         ylab("log2 (protein abundance)") +
-        xlab(paste(vacc_group, "groups")) +
-        labs(colour = paste(vacc_group, "groups")) +
+        xlab(paste(vacc_group, "timepoint")) +
+        labs(colour = paste(vacc_group, "timepoints")) +
         ggtitle(i) +
         theme(axis.ticks.x = element_blank())
         )
@@ -291,5 +286,4 @@ boxplot_function <- function(dataset, contrast_list)
 }
 
 boxplot_function(dataset, contrast_list)
-
 ```
